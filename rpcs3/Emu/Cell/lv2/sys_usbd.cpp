@@ -1138,8 +1138,15 @@ error_code sys_usbd_initialize(ppu_thread& ppu, vm::ptr<u32> handle)
 	{
 		std::lock_guard lock(usbh.mutex);
 
-		// Must not occur (lv2 allows multiple handles, cellUsbd does not)
-		ensure(!usbh.is_init.exchange(true));
+		// lv2 allows multiple handles/initializations of the USB subsystem.
+		// Older firmware/VSH revisions rely on this and call sys_usbd_initialize
+		// more than once during boot. Since this HLE implementation only models
+		// a single shared subsystem state (not per-handle), treat re-init as a
+		// no-op success instead of hard-failing, to match observed lv2 behavior.
+		if (usbh.is_init.exchange(true))
+		{
+			sys_usbd.notice("sys_usbd_initialize: subsystem already initialized, returning existing state");
+		}
 	}
 
 	ppu.check_state();
