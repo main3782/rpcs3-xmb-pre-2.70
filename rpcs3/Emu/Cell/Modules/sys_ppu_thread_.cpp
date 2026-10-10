@@ -74,6 +74,11 @@ void sys_initialize_tls(ppu_thread& ppu, u64 main_thread_id, u32 tls_seg_addr, u
 	// Uninitialized TLS expected.
 	if (ppu.gpr[13] != 0) return;
 
+	// VSH calls this from running PPU code (the loader only does it for non-VSH),
+	// so the thread isn't in the wait state. vm::alloc takes vm::writer_lock,
+	// which requires cpu_flag::wait to be set by the caller.
+	ppu.state += cpu_flag::wait;
+
 	// Initialize TLS memory
 	s_tls_addr = tls_seg_addr;
 	s_tls_file = tls_seg_size;
