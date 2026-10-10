@@ -14,6 +14,8 @@
 
 #if defined(__APPLE__)
 #include <pthread.h>
+#elif defined(ANDROID)
+#include "util/cctype.hpp"
 #endif
 
 LOG_CHANNEL(jit_log, "JIT");
@@ -707,11 +709,7 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, st
 	std::string result;
 
 	auto null_mod = std::make_unique<llvm::Module> ("null_", *m_context);
-#if LLVM_VERSION_MAJOR >= 21 && (LLVM_VERSION_MINOR >= 1 || LLVM_VERSION_MAJOR >= 22)
 	null_mod->setTargetTriple(llvm::Triple(jit_compiler::triple1()));
-#else
-	null_mod->setTargetTriple(jit_compiler::triple1());
-#endif
 
 	std::unique_ptr<llvm::RTDyldMemoryManager> mem;
 
@@ -725,11 +723,7 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, st
 		else
 		{
 			mem = std::make_unique<MemoryManager2>(std::move(symbols_cement));
-#if LLVM_VERSION_MAJOR >= 21 && (LLVM_VERSION_MINOR >= 1 || LLVM_VERSION_MAJOR >= 22)
 			null_mod->setTargetTriple(llvm::Triple(jit_compiler::triple2()));
-#else
-			null_mod->setTargetTriple(jit_compiler::triple2());
-#endif
 		}
 	}
 	else
@@ -1047,7 +1041,7 @@ const char * fallback_cpu_detection()
 			return "cortex-a78";
 		}
 
-		std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+		std::transform(result.begin(), result.end(), result.begin(), utils::tolower<char>);
 		return result;
 	}();
 

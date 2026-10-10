@@ -23,7 +23,7 @@
 // See Arm C Language Extensions Documentation
 // Currently there is no feature macro for LSE2 specifically so we define it ourself
 // Unfortunately the __ARM_ARCH integer macro isn't universally defined so we use this hack instead
-#if defined(__ARM_ARCH_8_4__) || defined(__ARM_ARCH_8_5__) || defined(__ARM_ARCH_8_6__) || defined(__ARM_ARCH_9__)
+#if defined(__APPLE__) || (__ARM_ARCH_8_4__) || defined(__ARM_ARCH_8_5__) || defined(__ARM_ARCH_8_6__) || defined(__ARM_ARCH_9__)
 #define ARM_FEATURE_LSE2 1
 #endif
 #endif
@@ -1195,7 +1195,7 @@ namespace stx
 	}
 }
 
-// Read object of type T from raw pointer, array, string, vector, or any contiguous container
+// Read object of type T from array, string, vector, or any contiguous container with size boundary checks
 template <typename T, typename U>
 	requires requires(U&& array) { std::size(array); std::data(array); }
 constexpr T read_from_ptr(U&& array, usz pos = 0, std::source_location src_loc = std::source_location::current())
@@ -1223,7 +1223,7 @@ constexpr T read_from_ptr(U&& array, usz pos = 0, std::source_location src_loc =
 	return std::bit_cast<T>(buf);
 }
 
-// Read object of type T from raw pointer, array, string, vector, or any contiguous container
+// Read object of type T from raw pointer without size boundary checks
 template <typename T, typename U>
 	requires (!requires(U&& array) { std::size(array); std::data(array); })
 constexpr T read_from_ptr_unsafe(U&& array, usz pos = 0)

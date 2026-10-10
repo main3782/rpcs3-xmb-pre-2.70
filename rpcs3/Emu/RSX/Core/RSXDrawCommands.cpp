@@ -662,7 +662,7 @@ namespace rsx
 		}
 	}
 
-	void draw_command_processor::fill_fragment_state_buffer(void* buffer, const RSXFragmentProgram& /*fragment_program*/) const
+	void draw_command_processor::fill_fragment_state_buffer(void* buffer, const RSXFragmentProgram& fragment_program) const
 	{
 #pragma pack(push, 1)
 		struct fragment_context_t
@@ -683,6 +683,27 @@ namespace rsx
 		// Always encode the alpha function. Toggling alpha-test is not guaranteed to trigger context param reload anymore.
 		const u32 alpha_func = static_cast<u32>(REGS(m_ctx)->alpha_func());
 		rop_control.set_alpha_test_func(alpha_func);
+
+		if (fragment_program.ctrl & RSX_SHADER_CONTROL_ROP_OUTPUT_REMAP)
+		{
+			const u32 remap_index = get_ROP_output_shuffle_index(REGS(m_ctx)->surface_color());
+			rop_control.set_output_remap(remap_index);
+		}
+
+		if (fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING)
+		{
+			const auto blend_enable_mask = REGS(m_ctx)->blend_enabled_mask() & REGS(m_ctx)->surface_color_target_mask();
+			rop_control.set_blend_target_mask(blend_enable_mask);
+		}
+
+		if (fragment_program.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_RANGE)
+		{
+			// Hardware clipping is disabled for these draws, see the fragment epilogue
+			if (REGS(m_ctx)->depth_clamp_enabled() || !REGS(m_ctx)->depth_clip_enabled())
+			{
+				rop_control.enable_depth_clamp();
+			}
+		}
 
 		// Generate wpos coefficients
 		// wpos equation is now as follows (ignoring pixel center offset):
@@ -731,7 +752,7 @@ namespace rsx
 
 		// indirection table size
 		const auto full_reupload = !prog || prog->has_indexed_constants;
-		const auto reloc_table = full_reupload ? decltype(prog->constant_ids){} : prog->constant_ids;
+		const auto reloc_table = full_reupload ? std::span<const u16>{} : std::span<const u16>(prog->constant_ids);
 		const auto redirection_table_size = full_reupload ? 468u : ::size32(prog->constant_ids);
 		instancing_indirection_table.resize(redirection_table_size);
 

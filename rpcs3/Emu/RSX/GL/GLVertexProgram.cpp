@@ -156,9 +156,18 @@ void GLVertexDecompilerThread::insertOutputs(std::stringstream& OS, const std::v
 	{
 		if (i.need_declare)
 		{
-			// All outputs must be declared always to allow setting default values
-			OS << "layout(location=" << gl::get_varying_register_location(i.name) << ") out vec4 " << i.name << ";\n";
+			// All outputs must be declared always to allow setting default values.
+			// NV4097_SET_SHADE_MODE applies to the front/back diffuse and specular colors.
+			const bool flat_color = (m_prog.ctrl & RSX_SHADER_CONTROL_FLAT_SHADING) &&
+				(i.name.starts_with("diff_color"sv) || i.name.starts_with("spec_color"sv));
+			OS << "layout(location=" << gl::get_varying_register_location(i.name) << ") out "
+				<< (flat_color ? "flat " : "") << "vec4 " << i.name << ";\n";
 		}
+	}
+
+	if (m_prog.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_RANGE)
+	{
+		OS << "layout(location=" << gl::get_varying_register_location("depth_range") << ") out flat vec2 depth_range;\n";
 	}
 }
 
@@ -175,6 +184,7 @@ void GLVertexDecompilerThread::insertMainStart(std::stringstream& OS)
 	properties2.require_explicit_invariance = dev_caps.vendor_MESA || (dev_caps.vendor_NVIDIA && g_cfg.video.shader_precision != gpu_preset_level::low);
 	properties2.require_instanced_render = !!(m_prog.ctrl & RSX_SHADER_CONTROL_INSTANCED_CONSTANTS);
 	properties2.require_clip_plane_functions = true;
+	properties2.emulate_depth_range = !!(m_prog.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_RANGE);
 
 	insert_glsl_legacy_function(OS, properties2);
 	glsl::insert_vertex_input_fetch(OS, glsl::glsl_rules_opengl4, dev_caps.vendor_INTEL == false);
@@ -282,7 +292,17 @@ void GLVertexDecompilerThread::insertMainEnd(std::stringstream& OS)
 	}
 
 	OS << "	gl_Position = gl_Position * scale_offset_mat;\n";
-	OS << "	gl_Position = apply_zclip_xform(gl_Position, z_near, z_far);\n";
+
+	if (!(m_prog.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_RANGE)) [[ likely ]]
+	{
+		OS << "	gl_Position = apply_zclip_xform(gl_Position, z_near, z_far);\n";
+	}
+	else
+	{
+		OS <<
+			"	depth_range = vec2(min(z_near, z_far), max(z_near, z_far));\n"
+			"	gl_Position = apply_depth_range_xform(gl_Position, depth_range);\n";
+	}
 
 	// Since our clip_space is symmetrical [-1, 1] we map it to linear space using the eqn:
 	// ln = (clip * 2) - 1 to fully utilize the 0-1 range of the depth buffer

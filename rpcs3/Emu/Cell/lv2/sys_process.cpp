@@ -80,7 +80,20 @@ s32 sys_process_getppid()
 template <typename T, typename Get>
 u32 idm_get_count()
 {
-	return idm::select<T, Get>([&](u32, Get&) {});
+	u32 count = 0;
+	idm::select<T, Get>([&](u32 id, Get& obj)
+	{
+		if constexpr (std::is_same_v<Get, lv2_memory>)
+		{
+			if (id == obj.system_handle)
+			{
+				return;
+			}
+		}
+
+		count++;
+	});
+	return count;
 }
 
 error_code sys_process_get_number_of_object(u32 object, vm::ptr<u32> nump)
@@ -123,8 +136,16 @@ error_code sys_process_get_number_of_object(u32 object, vm::ptr<u32> nump)
 template <typename T, typename Get>
 void idm_get_set(std::set<u32>& out)
 {
-	idm::select<T, Get>([&](u32 id, Get&)
+	idm::select<T, Get>([&](u32 id, Get& obj)
 	{
+		if constexpr (std::is_same_v<Get, lv2_memory>)
+		{
+			if (id == obj.system_handle)
+			{
+				return;
+			}
+		}
+
 		out.emplace(id);
 	});
 }
@@ -255,8 +276,10 @@ CellError process_is_spu_lock_line_reservation_address(u32 addr, u64 flags)
 	return {};
 }
 
-error_code sys_process_is_spu_lock_line_reservation_address(u32 addr, u64 flags)
+error_code sys_process_is_spu_lock_line_reservation_address(ppu_thread& ppu, u32 addr, u64 flags)
 {
+	ppu.state += cpu_flag::wait;
+
 	sys_process.warning("sys_process_is_spu_lock_line_reservation_address(addr=0x%x, flags=0x%llx)", addr, flags);
 
 	if (auto err = process_is_spu_lock_line_reservation_address(addr, flags))

@@ -21,7 +21,6 @@ struct cfg_root : cfg::node
 		cfg::_bool llvm_logs{ this, "Save LLVM logs" };
 		cfg::string llvm_cpu{ this, "Use LLVM CPU" };
 		cfg::_int<0, 1024> llvm_threads{ this, "Max LLVM Compile Threads", 0 };
-		cfg::_bool ppu_llvm_greedy_mode{ this, "PPU LLVM Greedy Mode", false, false };
 		cfg::_bool llvm_precompilation{ this, "LLVM Precompilation", true };
 		cfg::_enum<thread_scheduler_mode> thread_scheduler{this, "Thread Scheduler Mode", thread_scheduler_mode::os};
 		cfg::_bool set_daz_and_ftz{ this, "Set DAZ and FTZ", false };
@@ -72,6 +71,7 @@ struct cfg_root : cfg::node
 		cfg::_bool ppu_use_nj_bit{ this, "PPU Accurate Non-Java Mode", false }; // Accuracy. If set, accurately emulate NJ flag. Implies NJ fixup.
 		cfg::_bool ppu_set_vnan{ this, "PPU Accurate Vector NaN Values", false }; // Accuracy. Implies ppu_fix_vnan.
 		cfg::_bool ppu_set_fpcc{ this, "PPU Set FPCC Bits", false }; // Accuracy.
+		cfg::_bool ppu_set_vest{ this, "PPU Accurate Vector Estimates", false }; // Accuracy. Hardware exact vrefp and vrsqrtefp.
 
 		cfg::_bool debug_console_mode{ this, "Debug Console Mode", false }; // Debug console emulation, not recommended
 		cfg::_bool hook_functions{ this, "Hook static functions" };
@@ -107,6 +107,8 @@ struct cfg_root : cfg::node
 		cfg::_bool limit_cache_size{ this, "Limit disk cache size", false };
 		cfg::_int<0, 10240> cache_max_size{ this, "Disk cache maximum size (MB)", 5120 };
 		cfg::_bool empty_hdd0_tmp{ this, "Empty /dev_hdd0/tmp/", true };
+		cfg::_bool emulate_hdd_speed{ this, "Emulate HDD Read Speed", false, true };
+		cfg::_bool emulate_bdvd_speed{ this, "Emulate BD-ROM Read Speed", false, true };
 
 	} vfs{ this };
 
@@ -148,6 +150,7 @@ struct cfg_root : cfg::node
 		cfg::_bool disable_vertex_cache{ this, "Disable Vertex Cache", false };
 		cfg::_bool disable_FIFO_reordering{ this, "Disable FIFO Reordering", false };
 		cfg::_bool emulate_depth_compare{ this, "Emulate Special Depth Comparison", false };
+		cfg::_bool emulate_extended_depth_range{ this, "Emulate Extended Depth Range", false };
 		cfg::_bool frame_skip_enabled{ this, "Enable Frame Skip", false, true };
 		cfg::_bool force_cpu_blit_processing{ this, "Force CPU Blit", false, true }; // Debugging option
 		cfg::_bool disable_on_disk_shader_cache{ this, "Disable On-Disk Shader Cache", false };
@@ -172,22 +175,23 @@ struct cfg_root : cfg::node
 		cfg::_int<0, 30000000> driver_recovery_timeout{ this, "Driver Recovery Timeout", 1000000, true };
 		cfg::uint<0, 16667> driver_wakeup_delay{ this, "Driver Wake-Up Delay", 0, true };
 		cfg::_int<1, 6000> vblank_rate{ this, "Vblank Rate", 60, true }; // Changing this from 60 may affect game speed in unexpected ways
-		cfg::_bool vblank_ntsc{ this, "Vblank NTSC Fixup", false, true };
+		cfg::_bool vblank_ntsc{ this, "Vblank NTSC Fixup", true, true };
 		cfg::_bool decr_memory_layout{ this, "DECR memory layout", false}; // Force enable increased allowed main memory range as DECR console
 		cfg::_bool host_label_synchronization{ this, "Allow Host GPU Labels", false };
 		cfg::_bool disable_msl_fast_math{ this, "Disable MSL Fast Math", false };
 		cfg::_bool disable_async_host_memory_manager{ this, "Disable Asynchronous Memory Manager", false, true };
 		cfg::_enum<output_scaling_mode> output_scaling{ this, "Output Scaling Mode", output_scaling_mode::bilinear, true };
 		cfg::_bool record_with_overlays{ this, "Record With Overlays", true, true };
+		cfg::_bool disable_hardware_blending{ this, "Disable Hardware Blending", false, true };
 		cfg::_bool disable_hardware_texel_remapping{ this, "Disable Hardware ColorSpace Remapping", false, true };
 		cfg::uint<0, 100> rcas_sharpening_intensity{ this, "FidelityFX CAS Sharpening Intensity", 50, true };
+		cfg::_bool disable_blit_engine_upscaling{ this, "Disable Blit Engine Upscaling", false, true };
 
 		struct node_vk : cfg::node
 		{
 			node_vk(cfg::node* _this) : cfg::node(_this, "Vulkan") {}
 
 			cfg::string adapter{ this, "Adapter" };
-			cfg::_bool force_primitive_restart{ this, "Force primitive restart flag" };
 			cfg::_enum<vk_exclusive_fs_mode> exclusive_fullscreen_mode{ this, "Exclusive Fullscreen Mode", vk_exclusive_fs_mode::unspecified};
 			cfg::_bool asynchronous_texture_streaming{ this, "Asynchronous Texture Streaming", false };
 			cfg::_enum<vk_gpu_scheduler_mode> asynchronous_scheduler{ this, "Asynchronous Queue Scheduler", vk_gpu_scheduler_mode::safe };
@@ -224,6 +228,13 @@ struct cfg_root : cfg::node
 			cfg::_bool use_window_space{this, "Use Window Space", false, true};
 
 		} perf_overlay{ this };
+
+		struct native_ui : cfg::node
+		{
+			native_ui(cfg::node* _this) : cfg::node(_this, "Native UI") {}
+
+			cfg::string default_font{ this, "Default Font", "Arial", false };
+		} ui{ this };
 
 		struct node_shader_preloading_dialog : cfg::node
 		{
@@ -300,6 +311,7 @@ struct cfg_root : cfg::node
 		cfg::_bool mouse_debug_overlay{ this, "Mouse Debug overlay", false, true };
 		cfg::uint<1, 180> fake_move_rotation_cone_h{ this, "Fake Move Rotation Cone", 10, true };
 		cfg::uint<1, 180> fake_move_rotation_cone_v{ this, "Fake Move Rotation Cone (Vertical)", 10, true };
+		cfg::_enum<usio_handler_mode> usio_mode{ this, "USIO handler mode", usio_handler_mode::fighting_games };
 
 	} io{ this };
 
@@ -362,6 +374,7 @@ struct cfg_root : cfg::node
 		cfg::_bool autoexit{ this, "Exit RPCS3 when process finishes", false, true };
 		cfg::_bool autopause{ this, "Pause emulation on RPCS3 focus loss", false, true };
 		cfg::_bool start_fullscreen{ this, "Start games in fullscreen mode", true, true };
+		cfg::_bool start_big_picture_mode{ this, "Start Big Picture Mode on boot", false, true };
 		cfg::_bool prevent_display_sleep{ this, "Prevent display sleep while running games", true, true };
 		cfg::_bool show_trophy_popups{ this, "Show trophy popups", true, true };
 		cfg::_bool show_rpcn_popups{ this, "Show RPCN popups", true, true };

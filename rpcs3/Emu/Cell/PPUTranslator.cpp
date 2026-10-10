@@ -278,7 +278,7 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 		// Process the instructions
 		for (m_addr = block.first - base; m_addr < block.first + block.second - base; m_addr += 4)
 		{
-			if (m_ir->GetInsertBlock()->getTerminator())
+			if (llvm_has_terminator(m_ir->GetInsertBlock()))
 			{
 				break;
 			}
@@ -311,7 +311,7 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 		}
 
 		// Finalize current block if necessary (create branch to the next address)
-		if (!m_ir->GetInsertBlock()->getTerminator())
+		if (!llvm_has_terminator(m_ir->GetInsertBlock()))
 		{
 			FlushRegisters();
 			CallFunction(m_addr);
@@ -487,6 +487,16 @@ Value* PPUTranslator::VecHandleResult(Value* val, bool flush_denormals_manually)
 	val = g_cfg.core.ppu_fix_vnan ? VecHandleNan(val) : val;
 	val = flush_denormals_manually || !g_cfg.core.set_daz_and_ftz ? VecHandleDenormal(val) : val;
 	return val;
+}
+
+Value* PPUTranslator::VecEstimate(StringRef name, u32 vr)
+{
+	auto& entry = m_function->getEntryBlock();
+	const auto data = IRBuilder<>(&entry, entry.getFirstInsertionPt()).CreateAlloca(GetType<u32[4]>());
+
+	m_ir->CreateStore(GetVr(vr, VrType::vi32), data);
+	Call(GetType<void>(), name, data, ZExt(RegLoad(m_nj), GetType<u32>()));
+	return m_ir->CreateLoad(GetType<u32[4]>(), data);
 }
 
 Value* PPUTranslator::GetAddr(u64 _add)
@@ -1293,14 +1303,12 @@ void PPUTranslator::VCTUXS(ppu_opcode_t op)
 
 void PPUTranslator::VEXPTEFP(ppu_opcode_t op)
 {
-	const auto b = get_vr<f32[4]>(op.vb);
-	set_vr(op.vd, vec_handle_result(llvm_calli<f32[4], decltype(b)>{"llvm.exp2.v4f32", {b}}, true));
+	SetVr(op.vd, VecEstimate("__vexptefp", op.vb));
 }
 
 void PPUTranslator::VLOGEFP(ppu_opcode_t op)
 {
-	const auto b = get_vr<f32[4]>(op.vb);
-	set_vr(op.vd, vec_handle_result(llvm_calli<f32[4], decltype(b)>{"llvm.log2.v4f32", {b}}, true));
+	SetVr(op.vd, VecEstimate("__vlogefp", op.vb));
 }
 
 void PPUTranslator::VMADDFP(ppu_opcode_t op)
@@ -1772,6 +1780,12 @@ void PPUTranslator::VPKUWUS(ppu_opcode_t op)
 
 void PPUTranslator::VREFP(ppu_opcode_t op)
 {
+	if (g_cfg.core.ppu_set_vest)
+	{
+		SetVr(op.vd, VecEstimate("__vrefp", op.vb));
+		return;
+	}
+
 	set_vr(op.vd, vec_handle_result(fsplat<f32[4]>(1.0) / get_vr<f32[4]>(op.vb)));
 }
 
@@ -1815,6 +1829,12 @@ void PPUTranslator::VRLW(ppu_opcode_t op)
 
 void PPUTranslator::VRSQRTEFP(ppu_opcode_t op)
 {
+	if (g_cfg.core.ppu_set_vest)
+	{
+		SetVr(op.vd, VecEstimate("__vrsqrtefp", op.vb));
+		return;
+	}
+
 	set_vr(op.vd, vec_handle_result(fsplat<f32[4]>(1.0) / callf<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::sqrt), get_vr<f32[4]>(op.vb))));
 }
 
@@ -4760,13 +4780,14 @@ void PPUTranslator::FRSP(ppu_opcode_t op)
 void PPUTranslator::FCTIW(ppu_opcode_t op)
 {
 	const auto b = GetFpr(op.frb);
+
+#if defined(ARCH_X64)
 	const auto xormask = m_ir->CreateSExt(m_ir->CreateFCmpOGE(b, ConstantFP::get(GetType<f64>(), std::exp2l(31.))), GetType<s32>());
 
 	// fix result saturation (0x80000000 -> 0x7fffffff)
-#if defined(ARCH_X64)
 	SetFpr(op.frd, m_ir->CreateXor(xormask, Call(GetType<s32>(), "llvm.x86.sse2.cvtsd2si", m_ir->CreateInsertElement(GetUndef<f64[2]>(), b, u64{0}))));
 #elif defined(ARCH_ARM64)
-	SetFpr(op.frd, m_ir->CreateXor(xormask, Call(GetType<s32>(), "llvm.aarch64.neon.fcvtns.i32.f64", b)));
+	SetFpr(op.frd, Call(GetType<s32>(), "llvm.aarch64.neon.fcvtns.i32.f64", b));
 #endif
 
 	//SetFPSCR_FR(Call(GetType<bool>(), m_pure_attr, "__fctiw_get_fr", b));
@@ -4780,13 +4801,14 @@ void PPUTranslator::FCTIW(ppu_opcode_t op)
 void PPUTranslator::FCTIWZ(ppu_opcode_t op)
 {
 	const auto b = GetFpr(op.frb);
+
+#if defined(ARCH_X64)
 	const auto xormask = m_ir->CreateSExt(m_ir->CreateFCmpOGE(b, ConstantFP::get(GetType<f64>(), std::exp2l(31.))), GetType<s32>());
 
 	// fix result saturation (0x80000000 -> 0x7fffffff)
-#if defined(ARCH_X64)
 	SetFpr(op.frd, m_ir->CreateXor(xormask, Call(GetType<s32>(), "llvm.x86.sse2.cvttsd2si", m_ir->CreateInsertElement(GetUndef<f64[2]>(), b, u64{0}))));
 #elif defined(ARCH_ARM64)
-	SetFpr(op.frd, m_ir->CreateXor(xormask, Call(GetType<s32>(), "llvm.aarch64.neon.fcvtzs.i32.f64", b)));
+	SetFpr(op.frd, Call(GetType<s32>(), "llvm.aarch64.neon.fcvtzs.i32.f64", b));
 #endif
 }
 
@@ -5062,13 +5084,14 @@ void PPUTranslator::FABS(ppu_opcode_t op)
 void PPUTranslator::FCTID(ppu_opcode_t op)
 {
 	const auto b = GetFpr(op.frb);
+
+#if defined(ARCH_X64)
 	const auto xormask = m_ir->CreateSExt(m_ir->CreateFCmpOGE(b, ConstantFP::get(GetType<f64>(), std::exp2l(63.))), GetType<s64>());
 
 	// fix result saturation (0x8000000000000000 -> 0x7fffffffffffffff)
-#if defined(ARCH_X64)
 	SetFpr(op.frd, m_ir->CreateXor(xormask, Call(GetType<s64>(), "llvm.x86.sse2.cvtsd2si64", m_ir->CreateInsertElement(GetUndef<f64[2]>(), b, u64{0}))));
 #elif defined(ARCH_ARM64)
-	SetFpr(op.frd, m_ir->CreateXor(xormask, Call(GetType<s64>(), "llvm.aarch64.neon.fcvtns.i64.f64", b)));
+	SetFpr(op.frd, Call(GetType<s64>(), "llvm.aarch64.neon.fcvtns.i64.f64", b));
 #endif
 
 
@@ -5083,13 +5106,14 @@ void PPUTranslator::FCTID(ppu_opcode_t op)
 void PPUTranslator::FCTIDZ(ppu_opcode_t op)
 {
 	const auto b = GetFpr(op.frb);
+
+#if defined(ARCH_X64)
 	const auto xormask = m_ir->CreateSExt(m_ir->CreateFCmpOGE(b, ConstantFP::get(GetType<f64>(), std::exp2l(63.))), GetType<s64>());
 
 	// fix result saturation (0x8000000000000000 -> 0x7fffffffffffffff)
-#if defined(ARCH_X64)
 	SetFpr(op.frd, m_ir->CreateXor(xormask, Call(GetType<s64>(), "llvm.x86.sse2.cvttsd2si64", m_ir->CreateInsertElement(GetUndef<f64[2]>(), b, u64{0}))));
 #elif defined(ARCH_ARM64)
-	SetFpr(op.frd, m_ir->CreateXor(xormask, Call(GetType<s64>(), "llvm.aarch64.neon.fcvtzs.i64.f64", b)));
+	SetFpr(op.frd, Call(GetType<s64>(), "llvm.aarch64.neon.fcvtzs.i64.f64", b));
 #endif
 }
 

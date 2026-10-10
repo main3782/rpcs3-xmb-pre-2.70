@@ -53,11 +53,13 @@ const std::map<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::AccuratePPUNJ,              get_cfg_location(local_cfg.core.ppu_use_nj_bit) },
 	{ emu_settings_type::AccuratePPUVNAN,            get_cfg_location(local_cfg.core.ppu_set_vnan) },
 	{ emu_settings_type::AccuratePPUFPCC,            get_cfg_location(local_cfg.core.ppu_set_fpcc) },
+	{ emu_settings_type::AccuratePPUVEST,            get_cfg_location(local_cfg.core.ppu_set_vest) },
 	{ emu_settings_type::MaxPreemptCount,            get_cfg_location(local_cfg.core.max_cpu_preempt_count_per_frame) },
 	{ emu_settings_type::SPUProfiler,                get_cfg_location(local_cfg.core.spu_prof) },
 	{ emu_settings_type::DisableSpinOptimization,    get_cfg_location(local_cfg.core.spu_getllar_spin_optimization_disabled) },
 	{ emu_settings_type::EnabledSPUEventsBusyLoop,   get_cfg_location(local_cfg.core.spu_reservation_busy_waiting_enabled) },
 	{ emu_settings_type::PPUReservationPriorityOverSPUs, get_cfg_location(local_cfg.core.ppu_reservation_priority_over_spu) },
+	{ emu_settings_type::AccurateSpuReservations,    get_cfg_location(local_cfg.core.spu_accurate_reservations) },
 
 	// Graphics Tab
 	{ emu_settings_type::Renderer,                   get_cfg_location(local_cfg.video.renderer) },
@@ -111,8 +113,10 @@ const std::map<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::ForceHwMSAAResolve,         get_cfg_location(local_cfg.video.force_hw_MSAA_resolve) },
 	{ emu_settings_type::DisableAsyncHostMM,         get_cfg_location(local_cfg.video.disable_async_host_memory_manager) },
 	{ emu_settings_type::RecordWithOverlays,         get_cfg_location(local_cfg.video.record_with_overlays) },
-	{ emu_settings_type::DisableHWTexelRemapping,    get_cfg_location(local_cfg.video.disable_hardware_texel_remapping) },
+	{ emu_settings_type::DisableHWBlending,          get_cfg_location(local_cfg.video.disable_hardware_texel_remapping) },
+	{ emu_settings_type::DisableHWTexelRemapping,    get_cfg_location(local_cfg.video.disable_hardware_blending) },
 	{ emu_settings_type::FsrSharpeningStrength,      get_cfg_location(local_cfg.video.rcas_sharpening_intensity) },
+	{ emu_settings_type::DisableBlitEngineScaling,   get_cfg_location(local_cfg.video.disable_blit_engine_upscaling) },
 
 	// Vulkan
 	{ emu_settings_type::VulkanAdapter,                    get_cfg_location(local_cfg.video.vk.adapter) },
@@ -184,6 +188,7 @@ const std::map<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::Buzz,                    get_cfg_location(local_cfg.io.buzz) },
 	{ emu_settings_type::Turntable,               get_cfg_location(local_cfg.io.turntable) },
 	{ emu_settings_type::GHLtar,                  get_cfg_location(local_cfg.io.ghltar) },
+	{ emu_settings_type::USIO,                    get_cfg_location(local_cfg.io.usio_mode) },
 	{ emu_settings_type::MidiDevices,             get_cfg_location(local_cfg.io.midi_devices) },
 	{ emu_settings_type::SDLMappings,             get_cfg_location(local_cfg.io.load_sdl_mappings) },
 	{ emu_settings_type::MouseBasedGyro,          get_cfg_location(local_cfg.io.mouse_based_gyro_enabled) },
@@ -195,6 +200,7 @@ const std::map<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::StartOnBoot,                     get_cfg_location(local_cfg.misc.autostart) },
 	{ emu_settings_type::PauseOnFocusLoss,                get_cfg_location(local_cfg.misc.autopause) },
 	{ emu_settings_type::StartGameFullscreen,             get_cfg_location(local_cfg.misc.start_fullscreen) },
+	{ emu_settings_type::StartBigPictureModeOnBoot,       get_cfg_location(local_cfg.misc.start_big_picture_mode) },
 	{ emu_settings_type::PreventDisplaySleep,             get_cfg_location(local_cfg.misc.prevent_display_sleep) },
 	{ emu_settings_type::ShowTrophyPopups,                get_cfg_location(local_cfg.misc.show_trophy_popups) },
 	{ emu_settings_type::ShowRpcnPopups,                  get_cfg_location(local_cfg.misc.show_rpcn_popups) },
@@ -233,11 +239,15 @@ const std::map<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::DateFormat,            get_cfg_location(local_cfg.sys.date_fmt) },
 	{ emu_settings_type::TimeFormat,            get_cfg_location(local_cfg.sys.time_fmt) },
 	{ emu_settings_type::ConsoleTimeOffset,     get_cfg_location(local_cfg.sys.console_time_offset) },
+	{ emu_settings_type::HDDModelName,          get_cfg_location(local_cfg.sys.hdd_model) },
+	{ emu_settings_type::HDDSerialNumber,       get_cfg_location(local_cfg.sys.hdd_serial) },
 
 	{ emu_settings_type::EnableHostRoot,        get_cfg_location(local_cfg.vfs.host_root) },
 	{ emu_settings_type::EmptyHdd0Tmp,          get_cfg_location(local_cfg.vfs.empty_hdd0_tmp) },
 	{ emu_settings_type::LimitCacheSize,        get_cfg_location(local_cfg.vfs.limit_cache_size) },
 	{ emu_settings_type::MaximumCacheSize,      get_cfg_location(local_cfg.vfs.cache_max_size) },
+	{ emu_settings_type::EmulateHddSpeed,       get_cfg_location(local_cfg.vfs.emulate_hdd_speed) },
+	{ emu_settings_type::EmulateBdvdSpeed,      get_cfg_location(local_cfg.vfs.emulate_bdvd_speed) },
 
 	// Savestates
 	{ emu_settings_type::SuspendEmulationSavestateMode,       get_cfg_location(local_cfg.savestate.suspend_emu) },

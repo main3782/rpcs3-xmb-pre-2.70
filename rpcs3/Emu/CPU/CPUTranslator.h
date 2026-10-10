@@ -8,6 +8,10 @@
 #include "Utilities/JIT.h"
 #include "util/v128.hpp"
 
+#ifdef ARCH_X64
+#include <immintrin.h>
+#endif
+
 #ifdef _MSC_VER
 #pragma warning(push, 0)
 #else
@@ -21,15 +25,14 @@
 #pragma GCC diagnostic ignored "-Wmissing-noreturn"
 #pragma GCC diagnostic ignored "-Wredundant-decls"
 #endif
+#include "llvm/Config/llvm-config.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Support/KnownBits.h"
-#if LLVM_VERSION_MAJOR >= 21
 #include "llvm/Support/KnownFPClass.h"
-#endif
 #include "llvm/Analysis/SimplifyQuery.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -45,12 +48,39 @@
 #pragma GCC diagnostic pop
 #endif
 
+// MSVC can use intrinsics without compiling for its target feature
+#if defined(_MSC_VER) || !defined(ARCH_X64)
+#define GNUC_X64_TARGET(x)
+#else
+#define GNUC_X64_TARGET(x) [[gnu::target(x)]]
+#endif
+
 #include <functional>
 #include <unordered_map>
 #include <source_location>
 
 // Helper function
 llvm::Value* peek_through_bitcasts(llvm::Value*);
+
+inline bool llvm_has_terminator(const llvm::BasicBlock* bb)
+{
+#if LLVM_VERSION_MAJOR >= 23
+	return bb->hasTerminator();
+#else
+	return bb->getTerminator() != nullptr;
+#endif
+}
+
+// Constant fold the result of IRBuilder::CreateIntrinsic (LLVM 23+ IRBuilder may already return a folded constant)
+inline llvm::Constant* llvm_const_fold(llvm::Value* v)
+{
+	if (auto c = llvm::dyn_cast<llvm::Constant>(v))
+	{
+		return c;
+	}
+
+	return llvm::ConstantFoldInstruction(llvm::cast<llvm::Instruction>(v), llvm::DataLayout(""));
+}
 
 enum class i2 : char
 {
@@ -1180,11 +1210,7 @@ struct llvm_fshl
 	static llvm::Function* get_fshl(llvm::IRBuilder<>* ir)
 	{
 		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, llvm::Intrinsic::fshl, {llvm_value_t<T>::get_type(ir->getContext())});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, llvm::Intrinsic::fshl, {llvm_value_t<T>::get_type(ir->getContext())});
-#endif
 	}
 
 	static llvm::Value* fold(llvm::IRBuilder<>* ir, llvm::Value* v1, llvm::Value* v2, llvm::Value* v3)
@@ -1256,11 +1282,7 @@ struct llvm_fshr
 	static llvm::Function* get_fshr(llvm::IRBuilder<>* ir)
 	{
 		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, llvm::Intrinsic::fshr, {llvm_value_t<T>::get_type(ir->getContext())});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, llvm::Intrinsic::fshr, {llvm_value_t<T>::get_type(ir->getContext())});
-#endif
 	}
 
 	static llvm::Value* fold(llvm::IRBuilder<>* ir, llvm::Value* v1, llvm::Value* v2, llvm::Value* v3)
@@ -2366,11 +2388,7 @@ struct llvm_add_sat
 	static llvm::Function* get_add_sat(llvm::IRBuilder<>* ir)
 	{
 		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
-#endif
 	}
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
@@ -2453,11 +2471,7 @@ struct llvm_sub_sat
 	static llvm::Function* get_sub_sat(llvm::IRBuilder<>* ir)
 	{
 		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
-#endif
 	}
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
@@ -2775,7 +2789,7 @@ struct llvm_ctlz
 
 		if (llvm::isa<llvm::Constant>(v))
 		{
-			return llvm::ConstantFoldInstruction(ir->CreateIntrinsic(llvm::Intrinsic::ctlz, {v->getType()}, {v, ir->getFalse()}), llvm::DataLayout(""));
+			return llvm_const_fold(ir->CreateIntrinsic(llvm::Intrinsic::ctlz, {v->getType()}, {v, ir->getFalse()}));
 		}
 
 		return ir->CreateIntrinsic(llvm::Intrinsic::ctlz, {v->getType()}, {v, ir->getFalse()});
@@ -2820,7 +2834,7 @@ struct llvm_ctpop
 
 		if (llvm::isa<llvm::Constant>(v))
 		{
-			return llvm::ConstantFoldInstruction(ir->CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, v), llvm::DataLayout(""));
+			return llvm_const_fold(ir->CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, v));
 		}
 
 		return ir->CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, v);
@@ -2941,7 +2955,7 @@ struct llvm_fsqrt
 
 		if (llvm::isa<llvm::Constant>(v))
 		{
-			if (auto c = llvm::ConstantFoldInstruction(ir->CreateUnaryIntrinsic(llvm::Intrinsic::sqrt, v), llvm::DataLayout("")))
+			if (auto c = llvm_const_fold(ir->CreateUnaryIntrinsic(llvm::Intrinsic::sqrt, v)))
 			{
 				// Will fail in some cases (such as negative constant)
 				return c;
@@ -2987,7 +3001,7 @@ struct llvm_fabs
 
 		if (llvm::isa<llvm::Constant>(v))
 		{
-			return llvm::ConstantFoldInstruction(ir->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, v), llvm::DataLayout(""));
+			return llvm_const_fold(ir->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, v));
 		}
 
 		return ir->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, v);
@@ -3034,7 +3048,7 @@ struct llvm_fmuladd
 
 		if (llvm::isa<llvm::Constant>(v1) && llvm::isa<llvm::Constant>(v2) && llvm::isa<llvm::Constant>(v3))
 		{
-			return llvm::ConstantFoldInstruction(ir->CreateIntrinsic(llvm::Intrinsic::fma, {v1->getType()}, {v1, v2, v3}), llvm::DataLayout(""));
+			return llvm_const_fold(ir->CreateIntrinsic(llvm::Intrinsic::fma, {v1->getType()}, {v1, v2, v3}));
 		}
 
 		return ir->CreateIntrinsic(strict_fma ? llvm::Intrinsic::fma : llvm::Intrinsic::fmuladd, {v1->getType()}, {v1, v2, v3});
@@ -3804,11 +3818,7 @@ public:
 	llvm::Function* get_intrinsic(llvm::Intrinsic::ID id)
 	{
 		const auto _module = m_ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, id, {get_type<Types>()...});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, id, {get_type<Types>()...});
-#endif
 	}
 
 	template <typename T1, typename T2, typename T3>
@@ -3829,13 +3839,25 @@ public:
 	}
 
 	template <typename T1, typename T2>
-	value_t<u8[16]> gf2p8affineqb(T1 a, T2 b, u8 c)
+	GNUC_X64_TARGET("gfni") value_t<u8[16]> gf2p8affineqb(T1 a, T2 b, u8 c)
 	{
 		value_t<u8[16]> result;
 
 		const auto data0 = a.eval(m_ir);
 		const auto data1 = b.eval(m_ir);
 
+#ifdef ARCH_X64
+		const auto [a_is_const, a_data] = get_const_vector(data0, -1);
+		const auto [b_is_const, b_data] = get_const_vector(data1, -1);
+
+		if (a_is_const && b_is_const)
+		{
+			const auto affine = _mm_xor_si128(_mm_gf2p8affine_epi64_epi8(a_data, b_data, 0), _mm_set1_epi8(c));
+			result.value = llvm::ConstantDataVector::get(m_context, llvm::ArrayRef(static_cast<v128>(affine)._u8.m_data, 16));
+			return result;
+		}
+#endif
+		
 		const auto immediate = (llvm_const_int<u8>{c});
 		const auto imm8 = immediate.eval(m_ir);
 
@@ -3851,14 +3873,27 @@ public:
 		const auto data0 = a.eval(m_ir);
 		const auto data1 = b.eval(m_ir);
 		const auto data2 = c.eval(m_ir);
+		
+#ifdef ARCH_X64
+		const auto [a_is_const, a_data] = get_const_vector(data0, -1);
+		const auto [b_is_const, b_data] = get_const_vector(data1, -1);
+		const auto [c_is_const, c_data] = get_const_vector(data2, -1);
 
-#if LLVM_VERSION_MAJOR >= 22
-		// LLVM 22+ changed the intrinsic signature from v4i32 to v16i8 for operands 2 and 3
+		if (a_is_const && b_is_const && c_is_const)
+		{
+			__m128i dpbusd;
+			if (utils::has_avx512_icl())
+				dpbusd = _mm_wrapper_dpbusd_avx512vnni(a_data, b_data, c_data);
+			else
+				dpbusd = _mm_wrapper_dpbusd_avxvnni(a_data, b_data, c_data);
+
+			result.value = llvm::ConstantDataVector::get(m_context, llvm::ArrayRef(static_cast<v128>(dpbusd)._u32.m_data, 4));
+			return result;
+		}
+#endif
+
 		result.value = m_ir->CreateCall(get_intrinsic(llvm::Intrinsic::x86_avx512_vpdpbusd_128),
 			{data0, m_ir->CreateBitCast(data1, get_type<u8[16]>()), m_ir->CreateBitCast(data2, get_type<u8[16]>())});
-#else
-		result.value = m_ir->CreateCall(get_intrinsic(llvm::Intrinsic::x86_avx512_vpdpbusd_128), {data0, data1, data2});
-#endif
 		return result;
 	}
 
@@ -4224,13 +4259,27 @@ template <typename T1, typename T2, typename T3>
 	}
 
 	template <typename T1, typename T2, typename T3>
-	value_t<f32[4]> vfixupimmps(T1 a, T2 b, T3 c, u8 d, u8 e)
+	GNUC_X64_TARGET("avx512vl") value_t<f32[4]> vfixupimmps(T1 a, T2 b, T3 c, u8 d, u8 e)
 	{
 		value_t<f32[4]> result;
 
 		const auto data0 = a.eval(m_ir);
 		const auto data1 = b.eval(m_ir);
 		const auto data2 = c.eval(m_ir);
+		
+#ifdef ARCH_X64
+		const auto [a_is_const, a_data] = get_const_vector(data0, -1);
+		const auto [b_is_const, b_data] = get_const_vector(data1, -1);
+		const auto [c_is_const, c_data] = get_const_vector(data2, -1);
+
+		if (a_is_const && b_is_const && c_is_const)
+		{
+			const auto vfixup = _mm_mask_fixupimm_ps(a_data, e, b_data, c_data, 0); // flag reporting doesn't matter for constants
+			result.value = llvm::ConstantDataVector::get(m_context, llvm::ArrayRef(static_cast<v128>(vfixup)._f.m_data, 4));
+			return result;
+		}
+#endif
+		
 		const auto immediate = (llvm_const_int<u32>{d});
 		const auto imm32 = immediate.eval(m_ir);
 		const auto immediate2 = (llvm_const_int<u8>{e});
@@ -4333,17 +4382,26 @@ template <typename T1, typename T2, typename T3>
 	{
 		static_assert(depth <= llvm::MaxAnalysisRecursionDepth, "Depth parameter can only decrease search. Default is max.");
 
-#if LLVM_VERSION_MAJOR >= 21
 		const llvm::SimplifyQuery SQ(m_module->getDataLayout());
 		return llvm::computeKnownFPClass(a.eval(m_ir), interested_classes, SQ, llvm::MaxAnalysisRecursionDepth - depth);
-#else
-		return llvm::computeKnownFPClass(a.eval(m_ir), m_module->getDataLayout(), interested_classes, llvm::MaxAnalysisRecursionDepth - depth);
-#endif
 	}
 
 private:
 	// Custom intrinsic table
 	std::unordered_map<std::string_view, std::function<llvm::Value*(llvm::CallInst*)>> m_intrinsics;
+
+#ifdef ARCH_X64
+	// LLVM uses the same intrinsic despite different encodings
+	GNUC_X64_TARGET("avx512vnni,avx512vl") __m128i _mm_wrapper_dpbusd_avx512vnni(__m128i a, __m128i b, __m128i c)
+	{
+		return _mm_dpbusd_epi32(a, b, c);
+	}
+
+	GNUC_X64_TARGET("avxvnni") __m128i _mm_wrapper_dpbusd_avxvnni(__m128i a, __m128i b, __m128i c)
+	{
+		return _mm_dpbusd_avx_epi32(a, b, c);
+	}
+#endif
 
 public:
 	// Call custom intrinsic by name

@@ -32,6 +32,7 @@
 #include "module_verifier.hpp"
 #include "util/dyn_lib.hpp"
 #include <shellapi.h>
+#include <process.h>
 
 // TODO(cjj19970505@live.cn)
 // When compiling with WIN32_LEAN_AND_MEAN definition
@@ -393,6 +394,7 @@ constexpr auto arg_decrypt        = "decrypt";
 // Arguments that can be used with a gui application
 constexpr auto arg_no_gui         = "no-gui";
 constexpr auto arg_fullscreen     = "fullscreen"; // only useful with no-gui
+constexpr auto arg_big_picture    = "big-picture";
 constexpr auto arg_gs_screen      = "game-screen";
 constexpr auto arg_high_dpi       = "hidpi";
 constexpr auto arg_rounding       = "dpi-rounding";
@@ -654,14 +656,6 @@ int run_rpcs3(int argc, char** argv)
 	}
 #endif
 
-#if defined(__APPLE__) && defined(__x86_64__)
-	if (const utils::OS_version os = utils::get_OS_version();
-		os.version_major == 14 && os.version_minor < 3 && (utils::get_cpu_brand().rfind("VirtualApple", 0) == 0))
-	{
-		report_fatal_error(fmt::format("RPCS3 requires macOS 14.3.0 or later.\nYou're currently using macOS %i.%i.%i.\nPlease update macOS from System Settings.\n\n", os.version_major, os.version_minor, os.version_patch));
-	}
-#endif
-
 	ensure(thread_ctrl::is_main(), "Not main thread");
 
 	// Initialize thread pool finalizer (on first use)
@@ -822,6 +816,7 @@ int run_rpcs3(int argc, char** argv)
 	parser.addOption(QCommandLineOption(arg_headless, "Run RPCS3 in headless mode."));
 	parser.addOption(QCommandLineOption(arg_no_gui, "Run RPCS3 without its GUI."));
 	parser.addOption(QCommandLineOption(arg_fullscreen, "Run games in fullscreen mode. Only used when no-gui is set."));
+	parser.addOption(QCommandLineOption(arg_big_picture, "Run RPCS3 in Big Picture Mode on startup."));
 	const QCommandLineOption screen_option(arg_gs_screen, "Forces the emulator to use the specified screen for the game window.", "index", "");
 	parser.addOption(screen_option);
 	parser.addOption(QCommandLineOption(arg_high_dpi, "Enables Qt High Dpi Scaling.", "enabled", "1"));
@@ -984,23 +979,14 @@ int run_rpcs3(int argc, char** argv)
 			gui_app->SetGameScreenIndex(game_screen_index);
 		}
 
-		if (!gui_app->Init())
-		{
-			Emu.Quit(true);
-			return 0;
-		}
+		gui_app->Init();
 	}
 	else if (headless_application* headless_app = qobject_cast<headless_application*>(app.data()))
 	{
 		g_headless = true;
 
 		headless_app->SetActiveUser(active_user);
-
-		if (!headless_app->Init())
-		{
-			Emu.Quit(true);
-			return 0;
-		}
+		headless_app->Init();
 	}
 	else
 	{
@@ -1264,7 +1250,8 @@ int run_rpcs3(int argc, char** argv)
 	}
 	else if (const QStringList args = parser.positionalArguments(); (!args.isEmpty() || !emu_argv.empty()) && !is_updating && !parser.isSet(arg_installfw) && !parser.isSet(arg_installpkg))
 	{
-		std::string spath = (args.isEmpty() ? emu_argv[0] : ::at32(args, 0).toStdString());
+		u32 emu_argv_pos = 0;
+		std::string spath = (args.isEmpty() ? emu_argv[emu_argv_pos++] : ::at32(args, 0).toStdString());
 
 		if (spath.starts_with(Emulator::vfs_boot_prefix))
 		{
@@ -1301,7 +1288,7 @@ int run_rpcs3(int argc, char** argv)
 		}
 
 		// Additional arguments passed after "--"
-		if (emu_argv.size() > (args.isEmpty() ? 1 : 0))
+		if (emu_argv_pos < emu_argv.size())
 		{
 			// Reserve empty string for executable path
 			if (rpcs3_argv.empty())
@@ -1311,12 +1298,12 @@ int run_rpcs3(int argc, char** argv)
 
 			rpcs3_argv.emplace_back();
 
-			for (usz i = args.isEmpty() ? 1 : 0; i != emu_argv.size(); i++)
+			for (; emu_argv_pos < emu_argv.size(); emu_argv_pos++)
 			{
-				const std::string arg = args[i].toStdString();
+				const std::string arg = emu_argv[emu_argv_pos];
 				rpcs3_argv.emplace_back(arg);
 
-				sys_log.success("Optional command line argument %d: %s", i, arg);
+				sys_log.success("Optional command line argument %d: %s", emu_argv_pos, arg);
 			}
 		}
 
@@ -1387,7 +1374,20 @@ int run_rpcs3(int argc, char** argv)
 		Emu.Quit(true);
 		return 0;
 	}
+	else if (g_cfg.misc.start_big_picture_mode || parser.isSet(arg_big_picture))
+	{
+		Emu.CallFromMainThread([]()
+		{
+			Emu.BootBigPictureMode();
+		});
+	}
 
 	// run event loop (maybe only needed for the gui application)
+	if (gui_application* gui_app = qobject_cast<gui_application*>(app.data()))
+	{
+		// call gui_application::exec
+		return gui_app->exec();
+	}
+
 	return app->exec();
 }

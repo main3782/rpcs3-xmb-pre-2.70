@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/emu_callbacks.h"
 #include "Emu/System.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
@@ -214,6 +215,16 @@ int check_filename(std::string_view file_path, bool disallow_system_files, bool 
 	return 0;
 }
 
+static bool is_valid_dir_name(const std::string& dir_name)
+{
+	if (dir_name.empty() || dir_name.find_first_of('\0') != umax)
+	{
+		return false;
+	}
+
+	return sysutil_check_name_string(dir_name.c_str(), 1, CELL_SAVEDATA_DIRNAME_SIZE) == 0;
+}
+
 static std::vector<SaveDataEntry> get_save_entries(const std::string& base_dir, const std::string& prefix)
 {
 	std::vector<SaveDataEntry> save_entries;
@@ -250,6 +261,12 @@ static std::vector<SaveDataEntry> get_save_entries(const std::string& base_dir, 
 		save_entry.title     = psf::get_string(psf, "TITLE");
 		save_entry.subtitle  = psf::get_string(psf, "SUB_TITLE");
 		save_entry.details   = psf::get_string(psf, "DETAIL");
+
+		if (!is_valid_dir_name(save_entry.dirName))
+		{
+			cellSaveData.error("Savedata '%s' has an invalid SAVEDATA_DIRECTORY entry ('%s')", entry.name, save_entry.dirName);
+			continue;
+		}
 
 		for (const auto& entry2 : fs::dir(base_dir + entry.name))
 		{
@@ -305,7 +322,7 @@ static error_code select_and_delete(ppu_thread& ppu)
 		lv2_obj::sleep(ppu);
 
 		// Display a blocking Save Data List asynchronously in the GUI thread.
-		if (auto save_dialog = Emu.GetCallbacks().get_save_dialog())
+		if (auto save_dialog = g_emu_callbacks.get_save_dialog())
 		{
 			selected = save_dialog->ShowSaveDataList(base_dir, save_entries, focused, SAVEDATA_OP_LIST_DELETE, vm::null, g_fxo->get<savedata_manager>().enable_overlay);
 		}
@@ -848,6 +865,12 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 						save_entry2.subtitle  = psf::get_string(psf, "SUB_TITLE");
 						save_entry2.details   = psf::get_string(psf, "DETAIL");
 
+						if (!is_valid_dir_name(save_entry2.dirName))
+						{
+							cellSaveData.error("Savedata '%s' has an invalid SAVEDATA_DIRECTORY entry ('%s')", entry.name, save_entry2.dirName);
+							break;
+						}
+
 						for (const auto& entry2 : fs::dir(base_dir + entry.name))
 						{
 							if (entry2.is_directory || check_filename(vfs::unescape(entry2.name), false, true))
@@ -1215,7 +1238,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			lv2_obj::sleep(ppu);
 
 			// Display a blocking Save Data List asynchronously in the GUI thread.
-			if (auto save_dialog = Emu.GetCallbacks().get_save_dialog())
+			if (auto save_dialog = g_emu_callbacks.get_save_dialog())
 			{
 				selected = save_dialog->ShowSaveDataList(base_dir, save_entries, focused, operation, listSet, g_fxo->get<savedata_manager>().enable_overlay);
 			}
@@ -1468,6 +1491,12 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		save_entry.escaped = vfs::escape(save_entry.dirName);
 	}
 
+	if (!is_valid_dir_name(save_entry.dirName))
+	{
+		cellSaveData.error("savedata_op(): invalid savedata directory name ('%s')", save_entry.dirName);
+		return {CELL_SAVEDATA_ERROR_BROKEN, save_entry.dirName};
+	}
+
 	const std::string dir_path = base_dir + save_entry.escaped + "/";
 	const std::string old_path = base_dir + ".backup_" + save_entry.escaped + "/";
 	const std::string new_path = base_dir + ".working_" + save_entry.escaped + "/";
@@ -1560,7 +1589,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			if (a_it == blist.end() && b_it == blist.end())
 			{
 				// Order alphabetically for old saves
-				return a.name.compare(b.name);
+				return a.name < b.name;
 			}
 
 			return a_it < b_it;
@@ -2160,7 +2189,14 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 		// Remove old backup
 		fs::remove_all(old_path);
-		fs::sync();
+		fs::sync(new_path);
+
+#ifndef _WIN32
+		if (fs::g_tls_error != fs::error::ok)
+		{
+			cellSaveData.warning("savedata_op(): Failed to sync filesystem of '%s' (%s)", new_path, fs::g_tls_error);
+		}
+#endif
 
 		// Backup old savedata
 		if (!vfs::host::rename(dir_path, old_path, &g_mp_sys_dev_hdd0, false))
@@ -2215,7 +2251,7 @@ static NEVER_INLINE error_code savedata_get_list_item(vm::cptr<char> dirName, vm
 		return {CELL_SAVEDATA_ERROR_PARAM, "107"};
 	}
 
-	switch (sysutil_check_name_string(dirName.get_ptr(), 1, CELL_SAVEDATA_DIRLIST_MAX))
+	switch (sysutil_check_name_string(dirName.get_ptr(), 1, CELL_SAVEDATA_DIRNAME_SIZE))
 	{
 	case -1:
 	{

@@ -58,7 +58,8 @@ namespace vk
 			COMPILE_DEFAULT = 0,
 			COMPILE_INLINE = 1,
 			COMPILE_DEFERRED = 2,
-			SEPARATE_SHADER_OBJECTS = 4
+			SEPARATE_SHADER_OBJECTS = 4,
+			USE_LAST_PROVOKING_VERTEX = 8
 		};
 
 		using op_flags = rsx::flags32_t;
@@ -69,7 +70,7 @@ namespace vk
 		pipe_compiler();
 		~pipe_compiler();
 
-		void initialize(const vk::render_device* pdev);
+		void initialize(const vk::render_device* pdev, VkPipelineCache pipe_cache);
 
 		std::unique_ptr<glsl::program> compile(
 			const VkComputePipelineCreateInfo& cs,
@@ -187,6 +188,7 @@ namespace vk
 
 		const vk::render_device* m_device = nullptr;
 		lf_queue<pipe_compiler_job> m_work_queue;
+		VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
 
 		std::unique_ptr<glsl::program> int_compile_compute_pipe(
 			const VkComputePipelineCreateInfo& create_info,
@@ -213,7 +215,8 @@ namespace vk
 			op_flags flags);
 	};
 
-	void initialize_pipe_compiler(int num_worker_threads = -1);
+	void initialize_pipe_compiler(int num_worker_threads = 0, VkPipelineCache pipe_cache = VK_NULL_HANDLE);
+	void resize_pipe_compiler(int num_worker_threads = 0);
 	void destroy_pipe_compiler();
 	pipe_compiler* get_pipe_compiler();
 }

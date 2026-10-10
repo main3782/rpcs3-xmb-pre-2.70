@@ -1035,6 +1035,15 @@
     <ClCompile Include="QTGeneratedFiles\Release\moc_ipc_settings_dialog.cpp">
       <Filter>Generated Files\Release</Filter>
     </ClCompile>
+    <ClCompile Include="rpcs3qt\sky_ipc_settings_dialog.cpp">
+      <Filter>Gui\ipc</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Debug\moc_sky_ipc_settings_dialog.cpp">
+      <Filter>Generated Files\Debug</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Release\moc_sky_ipc_settings_dialog.cpp">
+      <Filter>Generated Files\Release</Filter>
+    </ClCompile>
     <ClCompile Include="rpcs3qt\uuid.cpp">
       <Filter>Gui\utils</Filter>
     </ClCompile>
@@ -1323,6 +1332,9 @@
     <ClCompile Include="rpcs3qt\guest_memory_dumper.cpp">
       <Filter>Gui\utils</Filter>
     </ClCompile>
+    <ClCompile Include="rpcs3qt\auto_scroll_label.cpp">
+      <Filter>Gui\widgets</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Input\ds4_pad_handler.h">
@@ -1576,6 +1588,9 @@
     </ClInclude>
     <ClInclude Include="rpcs3qt\render_creator.h">
       <Filter>Gui\settings</Filter>
+    </ClInclude>
+    <ClInclude Include="rpcs3qt\auto_scroll_label.h">
+      <Filter>Gui\widgets</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -1855,6 +1870,9 @@
     <CustomBuild Include="rpcs3qt\ipc_settings_dialog.h">
       <Filter>Gui\ipc</Filter>
     </CustomBuild>
+    <CustomBuild Include="rpcs3qt\sky_ipc_settings_dialog.h">
+      <Filter>Gui\ipc</Filter>
+    </CustomBuild>
     <CustomBuild Include="rpcs3qt\pad_motion_settings_dialog.h">
       <Filter>Gui\settings</Filter>
     </CustomBuild>
@@ -2087,6 +2105,15 @@
     </None>
     <None Include="..\.github\workflows\qt-ts.yml">
       <Filter>CI</Filter>
+    </None>
+    <None Include="..\bin\GuiConfigs\Old Steam by FlexBy.qss">
+      <Filter>StyleSheets</Filter>
+    </None>
+    <None Include="..\bin\GuiConfigs\Windows 11 (Dark Mode) by GustavoGraziano.qss">
+      <Filter>StyleSheets</Filter>
+    </None>
+    <None Include="..\bin\GuiConfigs\Windows 11 (Light Mode) by GustavoGraziano.qss">
+      <Filter>StyleSheets</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>

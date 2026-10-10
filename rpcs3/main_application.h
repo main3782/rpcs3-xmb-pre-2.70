@@ -13,7 +13,7 @@ class main_application
 public:
 	main_application();
 
-	virtual bool Init() = 0;
+	virtual void Init() = 0;
 
 	static void InitializeEmulator(const std::string& user, bool show_gui, bool headless);
 
@@ -27,7 +27,7 @@ protected:
 
 	void OnEmuSettingsChange();
 
-	EmuCallbacks CreateCallbacks();
+	virtual void create_callbacks();
 
 	std::shared_ptr<render_creator> m_render_creator;
 	std::string m_active_user;

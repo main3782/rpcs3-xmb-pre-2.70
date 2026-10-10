@@ -58,7 +58,11 @@ cpu_translator::cpu_translator(llvm::Module* _module, bool is_be)
 			const auto prev = ci->getParent();
 			const auto next = prev->splitBasicBlock(ci->getNextNode());
 
+#if LLVM_VERSION_MAJOR >= 23
+			llvm::cast<llvm::UncondBrInst>(m_ir->GetInsertBlock()->getTerminator())->setSuccessor(loop);
+#else
 			llvm::cast<llvm::BranchInst>(m_ir->GetInsertBlock()->getTerminator())->setOperand(0, loop);
+#endif
 
 			llvm::Value* result;
 			//m_ir->CreateBr(loop);
@@ -71,11 +75,7 @@ cpu_translator::cpu_translator(llvm::Module* _module, bool is_be)
 			result = m_ir->CreateInsertElement(v, m_ir->CreateExtractElement(data0, m_ir->CreateExtractElement(mask, i)), i);
 			v->addIncoming(result, loop);
 			m_ir->CreateCondBr(m_ir->CreateICmpULT(i, m_ir->getInt32(16)), loop, next);
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 			m_ir->SetInsertPoint(next->getFirstNonPHIIt());
-#else
-			m_ir->SetInsertPoint(next->getFirstNonPHI());
-#endif
 			result = m_ir->CreateSelect(m_ir->CreateICmpSLT(index, zeros), zeros, result);
 
 			return result;
@@ -260,9 +260,7 @@ llvm::Value* cpu_translator::bitcast(llvm::Value* val, llvm::Type* type, std::so
 	}
 
 	// Skip use iteration for values that don't have use lists
-#if LLVM_VERSION_MAJOR >= 21
 	if (source_val->hasUseList())
-#endif
 	{
 		for (llvm::Value* it_val : source_val->uses())
 		{
@@ -287,12 +285,10 @@ llvm::Value* cpu_translator::bitcast(llvm::Value* val, llvm::Type* type, std::so
 				}
 
 				// Check if bci has use list before accessing use_begin()
-#if LLVM_VERSION_MAJOR >= 21
 				if (!bci->hasUseList())
 				{
 					break;
 				}
-#endif
 
 				if (bci->use_begin() == bci->use_end())
 				{
@@ -347,6 +343,27 @@ std::pair<bool, v128> cpu_translator::get_const_vector<v128>(llvm::Value* c, u32
 	if (auto v = llvm::cast<llvm::FixedVectorType>(t); v->getScalarSizeInBits() * v->getNumElements() != 128)
 	{
 		fmt::throw_exception("[0x%x, %u] Bad vector size: i%ux%u", _pos, _line, v->getScalarSizeInBits(), v->getNumElements());
+	}
+
+	// Vector splats may be represented as ConstantInt/ConstantFP with a vector type (default for ConstantFP since LLVM 23)
+	const auto splat = [&](const llvm::APInt& elem) -> std::pair<bool, v128>
+	{
+		const auto cv = llvm::APInt::getSplat(128, elem);
+
+		result._u64[0] = cv.extractBitsAsZExtValue(64, 0);
+		result._u64[1] = cv.extractBitsAsZExtValue(64, 64);
+
+		return {true, result};
+	};
+
+	if (const auto ci = llvm::dyn_cast<llvm::ConstantInt>(c))
+	{
+		return splat(ci->getValue());
+	}
+
+	if (const auto cfp = llvm::dyn_cast<llvm::ConstantFP>(c))
+	{
+		return splat(cfp->getValueAPF().bitcastToAPInt());
 	}
 
 	const auto cv = llvm::dyn_cast<llvm::ConstantDataVector>(c);
@@ -584,10 +601,8 @@ void cpu_translator::erase_stores(llvm::ArrayRef<llvm::Value*> args)
 	for (auto v : args)
 	{
 		// Skip use iteration for values that don't have use lists
-#if LLVM_VERSION_MAJOR >= 21
 		if (!v->hasUseList())
 			continue;
-#endif
 
 		for (llvm::Value* i : v->uses())
 		{
@@ -597,10 +612,8 @@ void cpu_translator::erase_stores(llvm::ArrayRef<llvm::Value*> args)
 			while (i && (bci = llvm::dyn_cast<llvm::CastInst>(i)) && bci->getOpcode() == llvm::Instruction::BitCast)
 			{
 				// Check if bci has use list before accessing use_begin()
-#if LLVM_VERSION_MAJOR >= 21
 				if (!bci->hasUseList())
 					break;
-#endif
 
 				i = *bci->use_begin();
 			}

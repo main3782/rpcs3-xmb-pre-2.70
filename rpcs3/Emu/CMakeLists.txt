@@ -19,6 +19,7 @@ add_library(rpcs3_emu STATIC
     perf_monitor.cpp
     IPC_config.cpp
     IPC_socket.cpp
+    Io/SkylanderPortalIPC_config.cpp
 )
 
 if(USE_LTO)
@@ -137,6 +138,8 @@ target_sources(rpcs3_emu PRIVATE
     ../Loader/PSF.cpp
     ../Loader/PUP.cpp
     ../Loader/TAR.cpp
+    ../Loader/IRD.cpp
+    ../Loader/IRD_validation.cpp
     ../Loader/ISO.cpp
     ../Loader/iso_cache.cpp
     ../Loader/content_validation.cpp
@@ -198,6 +201,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/SPUThread.cpp
     Cell/lv2/lv2.cpp
     Cell/lv2/sys_bdemu.cpp
+    Cell/lv2/sys_bluetooth.cpp
     Cell/lv2/sys_btsetting.cpp
     Cell/lv2/sys_cond.cpp
     Cell/lv2/sys_console.cpp
@@ -442,6 +446,7 @@ target_sources(rpcs3_emu PRIVATE
     Io/RB3MidiKeyboard.cpp
     Io/recording_config.cpp
     Io/Skylander.cpp
+    Io/SkylanderPortalIPC.cpp
     Io/TopShotElite.cpp
     Io/TopShotFearmaster.cpp
     Io/Turntable.cpp
@@ -518,6 +523,12 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Overlays/HomeMenu/overlay_home_menu_page.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_settings.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_savestate.cpp
+    RSX/Overlays/HomeMenu/overlay_home_menu_sidebar_page.cpp
+    RSX/Overlays/BigPicture/overlay_big_picture.cpp
+    RSX/Overlays/BigPicture/overlay_big_picture_game_details.cpp
+    RSX/Overlays/BigPicture/overlay_big_picture_game_grid.cpp
+    RSX/Overlays/BigPicture/overlay_big_picture_game_info.cpp
+    RSX/Overlays/BigPicture/overlay_big_picture_main_menu.cpp
     RSX/Overlays/Network/overlay_recvmessage_dialog.cpp
     RSX/Overlays/Network/overlay_sendmessage_dialog.cpp
     RSX/Overlays/Trophies/overlay_trophy_list_dialog.cpp
@@ -574,8 +585,8 @@ target_sources(rpcs3_emu PRIVATE
     RSX/RSXThread.cpp
     RSX/RSXZCULL.cpp
     RSX/rsx_methods.cpp
-    RSX/rsx_utils.cpp
     RSX/rsx_vertex_data.cpp
+    RSX/Utils/rsx_utils.cpp
 )
 
 if(NOT ANDROID AND NOT APPLE)
@@ -621,6 +632,7 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/vkutils/commands.cpp
         RSX/VK/vkutils/ex.cpp
         RSX/VK/vkutils/data_heap.cpp
+        RSX/VK/vkutils/debug_print.cpp
         RSX/VK/vkutils/descriptors.cpp
         RSX/VK/vkutils/image.cpp
         RSX/VK/vkutils/image_helpers.cpp
