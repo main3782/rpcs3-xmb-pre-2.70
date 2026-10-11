@@ -950,6 +950,23 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		tile.base = base;
 		tile.bank = base;
 		tile.bound = bound;
+
+		// Older firmware (e.g. 2.17) never registers its display buffers (package 0x104 is never sent), probably because
+		// that was done by a separate OSD process (sys_init_osd.self) which cannot be run here, so nothing is ever presented.
+		// Tiles 0 and 1 are exactly the two display buffers on newer firmware (same offsets, pitch and size),
+		// so register them from the tile info if VSH has not done so itself. Newer firmware simply overwrites this with package 0x104.
+		if (Emu.IsVsh() && bound && location == CELL_GCM_LOCATION_LOCAL && a3 < 2 && a3 >= render->display_buffers_count && pitch)
+		{
+			sys_rsx.todo("sys_rsx_context_attribute(): VSH did not set display buffer %d, deriving it from tile (offset=0x%x, pitch=0x%x, size=0x%x)", a3, offset, pitch, size);
+
+			auto& db = render->display_buffers[a3];
+			db.offset = offset;
+			db.pitch = pitch;
+			db.width = pitch / 4;
+			db.height = size / pitch;
+			render->display_buffers_count = static_cast<u32>(a3) + 1;
+		}
+
 		break;
 	}
 	case 0x301: // Depth-buffer (Z-cull)
