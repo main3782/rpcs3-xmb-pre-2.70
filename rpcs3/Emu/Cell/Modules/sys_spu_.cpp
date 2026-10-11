@@ -334,7 +334,13 @@ error_code sys_spu_image_import(ppu_thread& ppu, vm::ptr<sys_spu_image> img, u32
 		img->nsegs       = num_segs;
 		img->entry_point = static_cast<u32>(ehdr->e_entry);
 
+		// vm::alloc/dealloc take vm::writer_lock, which requires cpu_flag::wait to be set by the caller
+		// (VSH calls this from regular running PPU threads)
+		ppu.state += cpu_flag::wait;
+
 		vm::ptr<sys_spu_segment> segs = vm::cast(vm::alloc(num_segs * sizeof(sys_spu_segment), vm::main));
+
+		ppu.check_state();
 
 		if (!segs)
 		{
@@ -343,7 +349,9 @@ error_code sys_spu_image_import(ppu_thread& ppu, vm::ptr<sys_spu_image> img, u32
 
 		if (sys_spu_image::fill(segs, num_segs, phdr, src) != num_segs)
 		{
+			ppu.state += cpu_flag::wait;
 			vm::dealloc(segs.addr());
+			ppu.check_state();
 			return CELL_ENOEXEC;
 		}
 
@@ -360,7 +368,11 @@ error_code sys_spu_image_close(ppu_thread& ppu, vm::ptr<sys_spu_image> img)
 	if (img->type == SYS_SPU_IMAGE_TYPE_USER)
 	{
 		//_sys_free(img->segs.addr());
-		vm::dealloc(img->segs.addr(), vm::main);
+		const u32 segs_addr = img->segs.addr();
+
+		ppu.state += cpu_flag::wait;
+		vm::dealloc(segs_addr, vm::main);
+		ppu.check_state();
 	}
 	else if (img->type == SYS_SPU_IMAGE_TYPE_KERNEL)
 	{

@@ -38,32 +38,37 @@ error_code _sys_heap_delete_heap(u32 heap)
 
 u32 _sys_heap_malloc(ppu_thread& ppu, u32 heap, u32 size)
 {
-	sysPrxForUser.warning("_sys_heap_malloc(heap=0x%x, size=0x%x)", heap, size);
-
-	// vm::alloc takes vm::writer_lock, which requires cpu_flag::wait to be set by the caller
+	// vm::alloc/dealloc take vm::writer_lock, which requires cpu_flag::wait to be set by the caller
 	// (VSH calls these from regular running PPU threads)
 	ppu.state += cpu_flag::wait;
 
-	return vm::alloc(size, vm::main);
+	sysPrxForUser.warning("_sys_heap_malloc(heap=0x%x, size=0x%x)", heap, size);
+
+	const u32 res = vm::alloc(size, vm::main);
+	ppu.check_state();
+	return res;
 }
 
 u32 _sys_heap_memalign(ppu_thread& ppu, u32 heap, u32 align, u32 size)
 {
-	sysPrxForUser.warning("_sys_heap_memalign(heap=0x%x, align=0x%x, size=0x%x)", heap, align, size);
-
 	ppu.state += cpu_flag::wait;
 
-	return vm::alloc(size, vm::main, std::max<u32>(align, 0x10000));
+	sysPrxForUser.warning("_sys_heap_memalign(heap=0x%x, align=0x%x, size=0x%x)", heap, align, size);
+
+	const u32 res = vm::alloc(size, vm::main, std::max<u32>(align, 0x10000));
+	ppu.check_state();
+	return res;
 }
 
 error_code _sys_heap_free(ppu_thread& ppu, u32 heap, u32 addr)
 {
-	sysPrxForUser.warning("_sys_heap_free(heap=0x%x, addr=0x%x)", heap, addr);
-
 	ppu.state += cpu_flag::wait;
+
+	sysPrxForUser.warning("_sys_heap_free(heap=0x%x, addr=0x%x)", heap, addr);
 
 	vm::dealloc(addr, vm::main);
 
+	ppu.check_state();
 	return CELL_OK;
 }
 
