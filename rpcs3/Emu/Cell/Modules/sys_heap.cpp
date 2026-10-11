@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
+#include "Emu/Cell/PPUThread.h"
 
 LOG_CHANNEL(sysPrxForUser);
 
@@ -35,23 +36,31 @@ error_code _sys_heap_delete_heap(u32 heap)
 	return CELL_OK;
 }
 
-u32 _sys_heap_malloc(u32 heap, u32 size)
+u32 _sys_heap_malloc(ppu_thread& ppu, u32 heap, u32 size)
 {
 	sysPrxForUser.warning("_sys_heap_malloc(heap=0x%x, size=0x%x)", heap, size);
+
+	// vm::alloc takes vm::writer_lock, which requires cpu_flag::wait to be set by the caller
+	// (VSH calls these from regular running PPU threads)
+	ppu.state += cpu_flag::wait;
 
 	return vm::alloc(size, vm::main);
 }
 
-u32 _sys_heap_memalign(u32 heap, u32 align, u32 size)
+u32 _sys_heap_memalign(ppu_thread& ppu, u32 heap, u32 align, u32 size)
 {
 	sysPrxForUser.warning("_sys_heap_memalign(heap=0x%x, align=0x%x, size=0x%x)", heap, align, size);
+
+	ppu.state += cpu_flag::wait;
 
 	return vm::alloc(size, vm::main, std::max<u32>(align, 0x10000));
 }
 
-error_code _sys_heap_free(u32 heap, u32 addr)
+error_code _sys_heap_free(ppu_thread& ppu, u32 heap, u32 addr)
 {
 	sysPrxForUser.warning("_sys_heap_free(heap=0x%x, addr=0x%x)", heap, addr);
+
+	ppu.state += cpu_flag::wait;
 
 	vm::dealloc(addr, vm::main);
 
