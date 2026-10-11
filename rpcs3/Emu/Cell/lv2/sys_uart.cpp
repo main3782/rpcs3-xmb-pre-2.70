@@ -2064,6 +2064,15 @@ void vuart_av_thread::parse_tx_buffer(u32 buf_size)
 		read_ptr += pkt_size;
 		buf_size = buf_size < pkt_size ? 0 : buf_size - pkt_size;
 
+		// Diagnostic: log every AV packet (cid + first payload bytes, which is usually the avport/head)
+		{
+			const u8* const body = static_cast<const u8*>(pkt_storage) + sizeof(ps3av_header);
+			const u32 body_size = pkt_size > sizeof(ps3av_header) ? pkt_size - static_cast<u32>(sizeof(ps3av_header)) : 0;
+			u8 b[4]{};
+			std::memcpy(b, body, std::min<u32>(body_size, 4));
+			sys_uart.notice("AV packet: cid=0x%08x len=0x%x payload=%02x %02x %02x %02x", hdr->cid, pkt_size, b[0], b[1], b[2], b[3]);
+		}
+
 		auto cmd = get_cmd(hdr->cid);
 
 		if (!cmd.get())
