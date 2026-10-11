@@ -707,6 +707,23 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 
 	auto queue = lv2_event_queue::find(ipc_key);
 
+	// Older firmware (e.g. 2.17) runs sys_audio.self as a separate process that owns this queue,
+	// and vshmw polls it forever ("waiting for audio server process ready") until it exists.
+	// We can't spawn that process, so provide an empty placeholder queue to get VSH past the wait.
+	// Must be done before taking id_manager::g_mutex (lv2_obj::create locks it internally).
+	if (!queue && ipc_key == 0x8000cafe0246fab4 && Emu.IsVsh())
+	{
+		sys_event.todo("sys_event_port_connect_ipc(): creating placeholder queue for the audio server (ipc_key=0x%llx)", ipc_key);
+
+		if (!lv2_obj::create<lv2_event_queue>(SYS_SYNC_PROCESS_SHARED, ipc_key, SYS_SYNC_NEWLY_CREATED, [&]()
+		{
+			return make_shared<lv2_event_queue>(SYS_SYNC_FIFO, SYS_PPU_QUEUE, 127, 0, ipc_key);
+		}))
+		{
+			queue = lv2_event_queue::find(ipc_key);
+		}
+	}
+
 	std::lock_guard lock(id_manager::g_mutex);
 
 	const auto port = idm::check_unlocked<lv2_obj, lv2_event_port>(eport_id);
