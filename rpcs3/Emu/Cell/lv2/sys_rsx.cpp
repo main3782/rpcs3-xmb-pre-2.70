@@ -154,6 +154,16 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 
 bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 {
+	// Diagnostic: log the first few events together with the handler mask set by the guest (gcm), to see if events are being filtered out
+	{
+		static std::atomic<u32> s_diag_count{0};
+
+		if (s_diag_count.fetch_add(1) < 24)
+		{
+			sys_rsx.warning("rsx::thread::send_event(): event_flags=0x%llx, guest handlers mask=0x%x, rsx_event_port=0x%x", event_flags, static_cast<u32>(vm::_ref<RsxDriverInfo>(driver_info).handlers), rsx_event_port);
+		}
+	}
+
 	// Filter event bits, send them only if they are masked by gcm
 	// Except the upper 32-bits, they are reserved for unmapped io events and execute unconditionally
 	event_flags &= vm::_ref<RsxDriverInfo>(driver_info).handlers | 0xffff'ffffull << 32;
