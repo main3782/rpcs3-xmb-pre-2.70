@@ -711,6 +711,9 @@ static std::string rsx_caller_trace()
 	return out;
 }
 
+extern std::atomic<u32> g_vuart_av_width;
+extern std::atomic<u32> g_vuart_av_height;
+
 error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64 a4, u64 a5, u64 a6)
 {
 	if (auto cpu = get_current_cpu_thread())
@@ -847,10 +850,19 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 		// Note: no error checking is being done
 
-		const u32 width = (a4 >> 32) & 0xFFFFFFFF;
-		const u32 height = a4 & 0xFFFFFFFF;
+		u32 width = (a4 >> 32) & 0xFFFFFFFF;
+		u32 height = a4 & 0xFFFFFFFF;
 		const u32 pitch = (a5 >> 32) & 0xFFFFFFFF;
 		const u32 offset = a5 & 0xFFFFFFFF;
+
+		// Older VSH (e.g. 2.17) passes 0x0 here, because the width/height globals it reads were never initialised.
+		// Fall back to the video mode VSH set through the AV interface, or to what was derived from the tile info.
+		if (Emu.IsVsh() && (!width || !height))
+		{
+			width = g_vuart_av_width ? g_vuart_av_width.load() : (render->display_buffers[id].width ? render->display_buffers[id].width : pitch / 4);
+			height = g_vuart_av_height ? g_vuart_av_height.load() : render->display_buffers[id].height;
+			sys_rsx.todo("sys_rsx_context_attribute(): VSH passed empty display buffer size for buffer %d, using %ux%u", id, width, height);
+		}
 
 		render->display_buffers[id].width = width;
 		render->display_buffers[id].height = height;

@@ -12,6 +12,10 @@
 
 LOG_CHANNEL(sys_uart);
 
+// Last video mode set on HEAD_A by the guest (VSH). Used by sys_rsx as a fallback when older VSH passes 0x0 display buffer dimensions.
+std::atomic<u32> g_vuart_av_width{0};
+std::atomic<u32> g_vuart_av_height{0};
+
 template <>
 void fmt_class_string<UartAudioCtrlID>::format(std::string& out, u64 arg)
 {
@@ -1551,6 +1555,12 @@ private:
 		}
 
 		sys_uart.notice("[inc_avset_cmd] new resolution on HEAD_%c width=%u height=%u", video_head_cfg.video_head == PS3AV_HEAD_A_HDMI ? 'A' : 'B', video_head_cfg.width, video_head_cfg.height);
+
+		if (video_head_cfg.video_head == PS3AV_HEAD_A_HDMI)
+		{
+			g_vuart_av_width = static_cast<u32>(video_head_cfg.width);
+			g_vuart_av_height = static_cast<u32>(video_head_cfg.height);
+		}
 
 		return PS3AV_STATUS_SUCCESS;
 	}
