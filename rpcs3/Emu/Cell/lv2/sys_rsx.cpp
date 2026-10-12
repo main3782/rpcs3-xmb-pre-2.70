@@ -4,6 +4,7 @@
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/Cell/PPUModule.h"
+#include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/timers.hpp"
 #include "Emu/Memory/vm_locking.h"
@@ -675,6 +676,41 @@ error_code sys_rsx_context_iounmap(cpu_thread& cpu, u32 context_id, u64 io, u64 
  * @param a5 (IN):
  * @param a6 (IN):
  */
+// Diagnostic: describe where in guest code the current PPU thread is calling from (LR + a few saved return addresses)
+static std::string rsx_caller_trace()
+{
+	const auto ppu = cpu_thread::get_current<ppu_thread>();
+
+	if (!ppu)
+	{
+		return "(not a PPU thread)";
+	}
+
+	std::string out = fmt::format("lr=0x%x bt=[", static_cast<u32>(ppu->lr));
+	u32 sp = static_cast<u32>(ppu->gpr[1]);
+
+	for (u32 i = 0; i < 6; i++)
+	{
+		if (!vm::check_addr(sp, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		const u32 back = static_cast<u32>(vm::_ref<u64>(sp));
+
+		if (back <= sp || !vm::check_addr(back + 0x10, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		fmt::append(out, "%s0x%x", i ? " " : "", static_cast<u32>(vm::_ref<u64>(back + 0x10)));
+		sp = back;
+	}
+
+	out += "]";
+	return out;
+}
+
 error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64 a4, u64 a5, u64 a6)
 {
 	if (auto cpu = get_current_cpu_thread())
@@ -684,6 +720,11 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 	// Flip/queue/reset flip/flip event/user command/vblank as trace to help with log spam
 	const bool trace_log = (package_id == 0x102 || package_id == 0x103 || package_id == 0x10a || package_id == 0xFEC || package_id == 0xFED || package_id == 0xFEF);
+
+	if (!trace_log)
+	{
+		sys_rsx.warning("sys_rsx_context_attribute(): package_id=0x%x called from %s", package_id, rsx_caller_trace());
+	}
 	(trace_log ? sys_rsx.trace : sys_rsx.warning)("sys_rsx_context_attribute(context_id=0x%x, package_id=0x%x, a3=0x%llx, a4=0x%llx, a5=0x%llx, a6=0x%llx)", context_id, package_id, a3, a4, a5, a6);
 
 	// todo: these event ports probly 'shouldnt' be here as i think its supposed to be interrupts that are sent from rsx somewhere in lv1
@@ -1204,7 +1245,7 @@ error_code sys_rsx_attribute(cpu_thread& cpu, u32 packageId, u32 a2, u32 a3, u32
 {
 	cpu.state += cpu_flag::wait;
 
-	sys_rsx.warning("sys_rsx_attribute(packageId=0x%x, a2=0x%x, a3=0x%x, a4=0x%x, a5=0x%x)", packageId, a2, a3, a4, a5);
+	sys_rsx.warning("sys_rsx_attribute(packageId=0x%x, a2=0x%x, a3=0x%x, a4=0x%x, a5=0x%x) called from %s", packageId, a2, a3, a4, a5, rsx_caller_trace());
 
 	return CELL_OK;
 }
