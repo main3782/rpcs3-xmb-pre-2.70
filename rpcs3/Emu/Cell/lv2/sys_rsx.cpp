@@ -859,8 +859,13 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		// Fall back to the video mode VSH set through the AV interface, or to what was derived from the tile info.
 		if (Emu.IsVsh() && (!width || !height))
 		{
-			width = g_vuart_av_width ? g_vuart_av_width.load() : (render->display_buffers[id].width ? render->display_buffers[id].width : pitch / 4);
-			height = g_vuart_av_height ? g_vuart_av_height.load() : render->display_buffers[id].height;
+			const u32 av_width = g_vuart_av_width.load();
+			const u32 av_height = g_vuart_av_height.load();
+			const u32 old_width = static_cast<u32>(render->display_buffers[id].width);
+			const u32 old_height = static_cast<u32>(render->display_buffers[id].height);
+
+			width = av_width ? av_width : (old_width ? old_width : pitch / 4);
+			height = av_height ? av_height : old_height;
 			sys_rsx.todo("sys_rsx_context_attribute(): VSH passed empty display buffer size for buffer %d, using %ux%u", id, width, height);
 		}
 
