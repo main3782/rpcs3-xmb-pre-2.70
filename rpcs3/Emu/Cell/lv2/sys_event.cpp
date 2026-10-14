@@ -190,20 +190,6 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 		return CELL_ENOTCONN;
 	}
 
-	if (key == s_vsh_audio_ipc_key)
-	{
-		// Diagnostic: what does VSH send to the (non-existent) audio server?
-		static atomic_t<u32> s_audio_sends = 0;
-		const u32 n = s_audio_sends++;
-
-		if (n < 400)
-		{
-			sys_event.warning("AUDIO-Q send #%u: source=0x%llx d1=0x%llx d2=0x%llx d3=0x%llx queued=%u receiver=%s %s", n,
-				std::get<0>(event), std::get<1>(event), std::get<2>(event), std::get<3>(event),
-				static_cast<u32>(events.size()), (pq || sq) ? "waiting" : "none", event_caller_trace());
-		}
-	}
-
 	if (!pq && !sq)
 	{
 		if (events.size() < this->size + 0u)
@@ -847,6 +833,74 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 	return CELL_OK;
 }
 
+// Minimal emulation of the PS3 audio server (sys_audio.self) for 2.17-era VSH.
+// The client side (vshmw, libaudio init at 0x31ce70..0x31d1e8) performs this handshake over IPC queues:
+//   request d1 = opcode in the low 9 bits (session id in the upper bits), d2 = reply queue ipc key
+//   reply   d1 = reply opcode (same upper bits), d2/d3 = payload
+//   op 0x01 -> reply 0x02, d2 = session id
+//   op 0x30 -> reply 0x30, d2 = generation (must differ from the client's cached value, initially 0)
+//   op 0x07 -> reply 0x08, d2 = shared memory size, d3 = shared memory flags (page size)
+//   op 0x09 -> reply 0x0a, d2 = shared memory ipc key, d3 = low 16 bits stored by the client (count)
+//   op 0x1c -> reply 0x1d, d2 = offset into the shared memory of the parameter block
+// Only after all of them succeeded does the client set its "initialized" flag (otherwise it returns
+// CELL_AUDIO_ERROR_NOT_INIT, which paf then stores and uses to skip display setup).
+static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
+{
+	static atomic_t<u32> s_log_count = 0;
+	static atomic_t<u64> s_reply_key = 0;
+
+	const bool do_log = s_log_count++ < 200;
+	const u32 op = static_cast<u32>(d1 & 0x1ff);
+
+	// The reply queue key is only guaranteed to be valid in the first request, remember it
+	if (op == 0x01)
+	{
+		s_reply_key = d2;
+	}
+
+	const u64 reply_key = op == 0x01 ? d2 : s_reply_key.load();
+
+	if (do_log)
+	{
+		sys_event.warning("AUDIO-SRV request: op=0x%x d1=0x%llx d2=0x%llx d3=0x%llx reply_key=0x%llx %s", op, d1, d2, d3, reply_key, event_caller_trace());
+	}
+
+	u64 reply_op = 0;
+	u64 r2 = 0;
+	u64 r3 = 0;
+
+	switch (op)
+	{
+	case 0x01: reply_op = 0x02; r2 = 0x200; break;
+	case 0x30: reply_op = 0x30; r2 = 1; break;
+	case 0x07: reply_op = 0x08; r2 = 0x100000; r3 = 0x400; break;
+	case 0x09: reply_op = 0x0a; r2 = 0x8000cafe02465a00ull; r3 = 8; break;
+	case 0x1c: reply_op = 0x1d; r2 = 0; break;
+	default:
+	{
+		sys_event.error("AUDIO-SRV: unknown request op=0x%x (d1=0x%llx), not replying", op, d1);
+		return;
+	}
+	}
+
+	const auto reply_queue = lv2_event_queue::find(reply_key);
+
+	if (!reply_queue)
+	{
+		sys_event.error("AUDIO-SRV: reply queue 0x%llx not found", reply_key);
+		return;
+	}
+
+	const u64 reply_d1 = (d1 & ~u64{0x1ff} & ~(u64{1} << 63)) | reply_op;
+
+	if (do_log)
+	{
+		sys_event.warning("AUDIO-SRV reply: d1=0x%llx d2=0x%llx d3=0x%llx", reply_d1, r2, r3);
+	}
+
+	reply_queue->send((u64{1} << 32) | 1, reply_d1, r2, r3);
+}
+
 error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 {
 	const auto cpu = cpu_thread::get_current();
@@ -872,6 +926,13 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 
 		if (lv2_obj::check(port.queue))
 		{
+			if (port.queue->key == s_vsh_audio_ipc_key && Emu.IsVsh())
+			{
+				// Fake audio server answers instead of enqueueing into the placeholder queue
+				vsh_audio_server_request(data1, data2, data3);
+				return {};
+			}
+
 			const u64 source = port.name ? port.name : (u64{process_getpid() + 0u} << 32) | u64{eport_id};
 
 			return port.queue->send(source, data1, data2, data3, &notified_thread, ppu && port.queue->type == SYS_PPU_QUEUE ? &port : nullptr);
