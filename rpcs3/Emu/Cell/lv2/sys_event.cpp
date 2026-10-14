@@ -4,10 +4,13 @@
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
 #include "Emu/System.h"
+#include "Emu/system_config.h"
 
 #include "Emu/Cell/ErrorCodes.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
+#include "Emu/Cell/timers.hpp"
 #include "sys_process.h"
 
 #include "util/asm.hpp"
@@ -119,6 +122,44 @@ shared_ptr<lv2_event_queue> lv2_event_queue::find(u64 ipc_key)
 
 extern void resume_spu_thread_group_from_waiting(spu_thread& spu, std::array<shared_ptr<named_thread<spu_thread>>, 8>& notify_spus);
 
+// Diagnostic (2.17 VSH bring-up): IPC key of the audio server queue that VSH talks to
+static constexpr u64 s_vsh_audio_ipc_key = 0x8000cafe0246fab4;
+
+// Diagnostic: describe where in guest code the current PPU thread is (LR + a few saved return addresses)
+static std::string event_caller_trace()
+{
+	const auto ppu = cpu_thread::get_current<ppu_thread>();
+
+	if (!ppu)
+	{
+		return "(not a PPU thread)";
+	}
+
+	std::string out = fmt::format("lr=0x%x bt=[", static_cast<u32>(ppu->lr));
+	u32 sp = static_cast<u32>(ppu->gpr[1]);
+
+	for (u32 i = 0; i < 6; i++)
+	{
+		if (!vm::check_addr(sp, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		const u32 back = static_cast<u32>(vm::_ref<u64>(sp));
+
+		if (back <= sp || !vm::check_addr(back + 0x10, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		fmt::append(out, "%s0x%x", i ? " " : "", static_cast<u32>(vm::_ref<u64>(back + 0x10)));
+		sp = back;
+	}
+
+	out += "]";
+	return out;
+}
+
 CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_event_port* port)
 {
 	if (notified_thread)
@@ -147,6 +188,20 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 	if (!exists)
 	{
 		return CELL_ENOTCONN;
+	}
+
+	if (key == s_vsh_audio_ipc_key)
+	{
+		// Diagnostic: what does VSH send to the (non-existent) audio server?
+		static atomic_t<u32> s_audio_sends = 0;
+		const u32 n = s_audio_sends++;
+
+		if (n < 400)
+		{
+			sys_event.warning("AUDIO-Q send #%u: source=0x%llx d1=0x%llx d2=0x%llx d3=0x%llx queued=%u receiver=%s %s", n,
+				std::get<0>(event), std::get<1>(event), std::get<2>(event), std::get<3>(event),
+				static_cast<u32>(events.size()), (pq || sq) ? "waiting" : "none", event_caller_trace());
+		}
 	}
 
 	if (!pq && !sq)
@@ -180,6 +235,12 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 		}
 
 		std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = event;
+
+		if (const u32 delay = g_cfg.core.ppu_event_wakeup_delay; delay && cpu_thread::get_current<spu_thread>())
+		{
+			// measured about 19us from the SPU mailbox write to the PPU receive return on real hardware
+			ppu.event_wakeup_time = get_system_time() + delay;
+		}
 
 		awake(&ppu);
 
@@ -585,6 +646,14 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 		else
 		{
 			ppu.state.wait(state);
+		}
+	}
+
+	if (const u64 wakeup_time = std::exchange(ppu.event_wakeup_time, 0))
+	{
+		if (const u64 current = get_system_time(); current < wakeup_time)
+		{
+			thread_ctrl::wait_for_accurate(wakeup_time - current);
 		}
 	}
 
