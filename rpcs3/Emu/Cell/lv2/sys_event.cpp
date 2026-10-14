@@ -841,7 +841,9 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 //   op 0x30 -> reply 0x30, d2 = generation. If it equals the value the client cached (0x1b4 in its state) the client
 //              assumes it is reconnecting and sends op 0x31 asking for an existing memory id, so use an unlikely value
 //              to force the fresh-connect path (client allocates the shared memory itself from the ipc key)
-//   op 0x07 -> reply 0x08, d2 = shared memory size, d3 = shared memory flags (page size)
+//   op 0x07 -> reply 0x08, d2 = shared memory size, d3 = shared memory flags (page size). The client passes them to
+//              sys_mmapper_allocate_shared_memory; bit 0x8000 (NOT_CARE) makes RPCS3 create the shm if the ipc key does
+//              not exist yet, since there is no real server that created it beforehand (otherwise CELL_ESRCH)
 //   op 0x09 -> reply 0x0a, d2 = shared memory ipc key, d3 = low 16 bits stored by the client (count)
 //   op 0x1c -> reply 0x1d, d2 = offset into the shared memory of the parameter block
 // Only after all of them succeeded does the client set its "initialized" flag (otherwise it returns
@@ -875,7 +877,7 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 	{
 	case 0x01: reply_op = 0x02; r2 = 0x200; break;
 	case 0x30: reply_op = 0x30; r2 = 0x5a5a5; break;
-	case 0x07: reply_op = 0x08; r2 = 0x100000; r3 = 0x400; break;
+	case 0x07: reply_op = 0x08; r2 = 0x100000; r3 = 0x8400; break;
 	case 0x09: reply_op = 0x0a; r2 = 0x8000cafe02465a00ull; r3 = 8; break;
 	case 0x1c: reply_op = 0x1d; r2 = 0; break;
 	default:
