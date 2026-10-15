@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "sys_mmapper.h"
 
+#include "Emu/System.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/savestate_utils.hpp"
@@ -810,6 +811,39 @@ error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_i
 	ppu.state += cpu_flag::wait;
 
 	sys_mmapper.warning("sys_mmapper_search_and_map(start_addr=0x%x, mem_id=0x%x, flags=0x%x, alloc_addr=*0x%x)", start_addr, mem_id, flags, alloc_addr);
+
+	if (start_addr == 0 && Emu.IsVsh())
+	{
+		// 2.17 VSH bring-up: the audio client (vshmw, 0x31d06c) reads the area to map into from its own state, which should have been
+		// filled by a sys_mmapper_allocate_address call that never happened here, so it passes 0. Provide the area it would have got.
+		static atomic_t<u32> s_vsh_area = 0;
+
+		u32 area_addr = s_vsh_area;
+
+		if (!area_addr)
+		{
+			if (const auto new_area = vm::find_map(0x10000000, 0x10000000, vm::mapping_comp | SYS_MEMORY_PAGE_SIZE_1M))
+			{
+				u32 expected = 0;
+
+				if (s_vsh_area.compare_exchange(expected, new_area->addr))
+				{
+					area_addr = new_area->addr;
+				}
+				else
+				{
+					area_addr = expected;
+				}
+
+				sys_mmapper.warning("sys_mmapper_search_and_map(): VSH passed start_addr=0, using substitute area 0x%x", area_addr);
+			}
+		}
+
+		if (area_addr)
+		{
+			start_addr = area_addr;
+		}
+	}
 
 	const auto area = vm::get(vm::any, start_addr);
 
