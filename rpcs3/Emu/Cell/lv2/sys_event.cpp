@@ -866,12 +866,10 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 	if (op == 0x01)
 	{
 		// New client connection: give it its own session id (0x200, 0x400, ...) and remember its reply queue
-		const u32 n = ++s_session_count;
+		// The counter lives as long as RPCS3 does (VSH can restart inside one session), so wrap it into the table
+		const u32 n = (++s_session_count - 1) % (static_cast<u32>(std::size(s_reply_keys)) - 1) + 1;
 
-		if (n < std::size(s_reply_keys))
-		{
-			s_reply_keys[n] = d2;
-		}
+		s_reply_keys[n] = d2;
 
 		session = u64{n} << 9;
 		reply_key = d2;

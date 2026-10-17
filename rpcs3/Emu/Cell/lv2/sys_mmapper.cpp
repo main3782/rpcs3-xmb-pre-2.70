@@ -816,24 +816,28 @@ error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_i
 	{
 		// 2.17 VSH bring-up: the audio client (vshmw, 0x31d06c) reads the area to map into from its own state, which should have been
 		// filled by a sys_mmapper_allocate_address call that never happened here, so it passes 0. Provide the area it would have got.
+		// VSH can restart inside the same RPCS3 session (e.g. after a format), which resets the guest memory map, so a cached area
+		// address must be checked to still exist before it is reused.
 		static atomic_t<u32> s_vsh_area = 0;
 
 		u32 area_addr = s_vsh_area;
+
+		if (area_addr)
+		{
+			const auto cached = vm::get(vm::any, area_addr);
+
+			if (!cached || cached->addr != area_addr)
+			{
+				area_addr = 0;
+			}
+		}
 
 		if (!area_addr)
 		{
 			if (const auto new_area = vm::find_map(0x10000000, 0x10000000, vm::mapping_comp | SYS_MEMORY_PAGE_SIZE_1M))
 			{
-				u32 expected = 0;
-
-				if (s_vsh_area.compare_exchange(expected, new_area->addr))
-				{
-					area_addr = new_area->addr;
-				}
-				else
-				{
-					area_addr = expected;
-				}
+				area_addr = new_area->addr;
+				s_vsh_area = area_addr;
 
 				sys_mmapper.warning("sys_mmapper_search_and_map(): VSH passed start_addr=0, using substitute area 0x%x", area_addr);
 			}
