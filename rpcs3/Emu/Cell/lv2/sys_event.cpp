@@ -846,23 +846,45 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 //              not exist yet, since there is no real server that created it beforehand (otherwise CELL_ESRCH)
 //   op 0x09 -> reply 0x0a, d2 = shared memory ipc key, d3 = low 16 bits stored by the client (count)
 //   op 0x1c -> reply 0x1d, d2 = offset into the shared memory of the parameter block
+//   op 0x1a4 -> reply 0x1a5, d2 = two packed 16-bit values the client stores (meaning unknown)
+//   Every other opcode seen so far gets reply = request opcode + 1 (the pattern all checked client functions expect).
+//   Each client connection (op 0x01) gets its own session id (0x200, 0x400, ...) which later requests carry in d1.
 // Only after all of them succeeded does the client set its "initialized" flag (otherwise it returns
 // CELL_AUDIO_ERROR_NOT_INIT, which paf then stores and uses to skip display setup).
 static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 {
 	static atomic_t<u32> s_log_count = 0;
-	static atomic_t<u64> s_reply_key = 0;
+	static atomic_t<u32> s_session_count = 0;
+	static atomic_t<u64> s_reply_keys[64]{}; // Reply queue ipc key of each client connection, indexed by session number
 
-	const bool do_log = s_log_count++ < 200;
+	const bool do_log = s_log_count++ < 400;
 	const u32 op = static_cast<u32>(d1 & 0x1ff);
+	u64 session = d1 & ~u64{0x1ff} & ~(u64{1} << 63);
 
-	// The reply queue key is only guaranteed to be valid in the first request, remember it
+	u64 reply_key = 0;
+
 	if (op == 0x01)
 	{
-		s_reply_key = d2;
-	}
+		// New client connection: give it its own session id (0x200, 0x400, ...) and remember its reply queue
+		const u32 n = ++s_session_count;
 
-	const u64 reply_key = op == 0x01 ? d2 : s_reply_key.load();
+		if (n < std::size(s_reply_keys))
+		{
+			s_reply_keys[n] = d2;
+		}
+
+		session = u64{n} << 9;
+		reply_key = d2;
+	}
+	else
+	{
+		const u64 idx = session >> 9;
+
+		if (idx && idx < std::size(s_reply_keys))
+		{
+			reply_key = s_reply_keys[idx];
+		}
+	}
 
 	if (do_log)
 	{
@@ -875,27 +897,35 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 
 	switch (op)
 	{
-	case 0x01: reply_op = 0x02; r2 = 0x200; break;
+	case 0x01: reply_op = 0x02; r2 = session; break;
 	case 0x30: reply_op = 0x30; r2 = 0x5a5a5; break;
 	case 0x07: reply_op = 0x08; r2 = 0x100000; r3 = 0x8400; break;
 	case 0x09: reply_op = 0x0a; r2 = 0x8000cafe02465a00ull; r3 = 8; break;
 	case 0x1c: reply_op = 0x1d; r2 = 0; break;
+	case 0x1a4: reply_op = 0x1a5; r2 = 0x00080008; break; // two packed 16-bit values stored by the client, meaning unknown (guess: 8 and 8)
 	default:
 	{
-		sys_event.error("AUDIO-SRV: unknown request op=0x%x (d1=0x%llx), not replying", op, d1);
-		return;
+		// Every client function checked so far expects (request opcode + 1) in the reply, so guess that with an empty payload
+		reply_op = (op + 1) & 0x1ff;
+		sys_event.error("AUDIO-SRV: unknown request op=0x%x (d1=0x%llx d2=0x%llx d3=0x%llx), guessing reply op=0x%x with empty payload", op, d1, d2, d3, reply_op);
+		break;
 	}
 	}
 
-	const auto reply_queue = lv2_event_queue::find(reply_key);
+	shared_ptr<lv2_event_queue> reply_queue;
+
+	if (reply_key)
+	{
+		reply_queue = lv2_event_queue::find(reply_key);
+	}
 
 	if (!reply_queue)
 	{
-		sys_event.error("AUDIO-SRV: reply queue 0x%llx not found", reply_key);
+		sys_event.error("AUDIO-SRV: reply queue 0x%llx not found (op=0x%x)", reply_key, op);
 		return;
 	}
 
-	const u64 reply_d1 = (d1 & ~u64{0x1ff} & ~(u64{1} << 63)) | reply_op;
+	const u64 reply_d1 = session | reply_op;
 
 	if (do_log)
 	{
