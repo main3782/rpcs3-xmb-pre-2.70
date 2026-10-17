@@ -1,5 +1,11 @@
 #include "stdafx.h"
+
+#include <array>
+#include <mutex>
+#include <unordered_map>
+
 #include "Emu/IdManager.h"
+#include "Emu/Memory/vm.h"
 
 #include "Emu/Cell/ErrorCodes.h"
 #include "sys_event.h"
@@ -17,6 +23,30 @@ namespace
 		// This is probably wrong and should be assigned per fd or something
 		atomic_ptr<lv2_event_queue> asyncequeue;
 	};
+}
+
+namespace
+{
+	// In-memory sparse backing store for the emulated internal HDD (every region of it), so that what VSH writes with sys_storage_write
+	// while formatting can be read back with sys_storage_read. The 2.17 format/restore routine verifies the filesystem it just wrote
+	// ("cg 0: bad magic number" -> assertion -> crash if the readback is all zeros).
+	// Sectors that were never written, or were written as all zeros, read back as zeros. Contents are not persisted between sessions.
+	struct hdd_sector_store
+	{
+		std::mutex mutex;
+		std::unordered_map<u64, std::unordered_map<u64, std::array<u8, 0x200>>> devices; // device id -> sector number -> data
+	};
+
+	hdd_sector_store& get_hdd_store()
+	{
+		static hdd_sector_store store;
+		return store;
+	}
+
+	bool is_emulated_hdd(u64 device)
+	{
+		return (device & 0xFFFFF00FFFFFFFF) == ATA_HDD;
+	}
 }
 
 error_code sys_storage_open(u64 device, u64 mode, vm::ptr<u32> fd, u64 flags)
@@ -71,6 +101,25 @@ error_code sys_storage_read(u32 fd, u32 mode, u32 start_sector, u32 num_sectors,
 		return CELL_ESRCH;
 	}
 
+	if (is_emulated_hdd(handle->device_id))
+	{
+		auto& store = get_hdd_store();
+		std::lock_guard lock(store.mutex);
+
+		if (const auto dev = store.devices.find(handle->device_id); dev != store.devices.end())
+		{
+			u8* dst = static_cast<u8*>(bounce_buf.get_ptr());
+
+			for (u32 i = 0; i < num_sectors; i++)
+			{
+				if (const auto sector = dev->second.find(u64{start_sector} + i); sector != dev->second.end())
+				{
+					std::memcpy(dst + i * 0x200ull, sector->second.data(), 0x200);
+				}
+			}
+		}
+	}
+
 	if (handle->file)
 	{
 		handle->file.seek(start_sector * 0x200ull);
@@ -98,6 +147,35 @@ error_code sys_storage_write(u32 fd, u32 mode, u32 start_sector, u32 num_sectors
 	if (!handle)
 	{
 		return CELL_ESRCH;
+	}
+
+	if (is_emulated_hdd(handle->device_id) && data && num_sectors)
+	{
+		if (num_sectors > 0x8000 || !vm::check_addr(data.addr(), vm::page_readable, static_cast<u32>(num_sectors * 0x200ull)))
+		{
+			return CELL_EFAULT;
+		}
+
+		const u8* src = static_cast<const u8*>(data.get_ptr());
+		static constexpr std::array<u8, 0x200> zero_sector{};
+
+		auto& store = get_hdd_store();
+		std::lock_guard lock(store.mutex);
+		auto& dev = store.devices[handle->device_id];
+
+		for (u32 i = 0; i < num_sectors; i++)
+		{
+			const u8* sector_data = src + i * 0x200ull;
+
+			if (std::memcmp(sector_data, zero_sector.data(), 0x200) == 0)
+			{
+				dev.erase(u64{start_sector} + i);
+			}
+			else
+			{
+				std::memcpy(dev[u64{start_sector} + i].data(), sector_data, 0x200);
+			}
+		}
 	}
 
 	*sectors_wrote = num_sectors;
