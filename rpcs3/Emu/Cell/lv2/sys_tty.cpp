@@ -122,6 +122,12 @@ error_code sys_tty_write([[maybe_unused]] ppu_thread& ppu, s32 ch, vm::cptr<char
 		return false;
 	};
 
+	if (msg.find("fsck returned") != umax)
+	{
+		// Diagnostic (2.17 VSH bring-up): where does the boot-time filesystem check verdict come from?
+		ppu_log.warning("FSCK-RESULT call stack:\n%s", dump_useful_thread_info());
+	}
+
 	std::string_view sample = std::string_view(msg).substr(0, 1024);
 
 	const bool warning = find_word(sample, "failed"sv) || find_word(sample, "abort"sv) || find_word(sample, "crash"sv)

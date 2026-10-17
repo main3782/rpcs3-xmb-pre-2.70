@@ -3841,6 +3841,9 @@ error_code sys_fs_newfs(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char>
 	return CELL_OK;
 }
 
+// Thread id that "mounted" the HDD as a utility device for VSH's boot-time filesystem check (see sys_fs_mount), 0 if none
+static atomic_t<u32> s_vsh_fake_hdd0_mount_thread = 0;
+
 error_code sys_fs_mount(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char> file_system, vm::cptr<char> path, s32 unk1, s32 prot, s32 unk2, vm::cptr<char> str1, u32 str_len)
 {
 	lv2_obj::sleep(ppu);
@@ -3881,7 +3884,19 @@ error_code sys_fs_mount(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char>
 		return {CELL_ENXIO, device_name};
 
 	if (g_fxo->get<lv2_fs_mount_info_map>().is_device_mounted(device_name) || !lock.try_lock())
+	{
+		// VSH's boot-time filesystem check (libfs_utility 0xe97f0) first mounts the HDD as a utility device. On a real PS3 /dev_hdd0 is not
+		// mounted yet at that point, but RPCS3 has it mounted from the start, so the check gets CELL_EBUSY and reports the disk as corrupted
+		// ("sys_init: fsck returned invalid value: 0x8"). Pretend the mount worked; the matching unmount is skipped in sys_fs_unmount.
+		if (Emu.IsVsh() && device_name == "CELL_FS_UTILITY:HDD0"sv && path_sv == "/dev_hdd0"sv && filesystem == "CELL_FS_SIMPLEFS"sv)
+		{
+			s_vsh_fake_hdd0_mount_thread = ppu.id;
+			sys_fs.warning("sys_fs_mount(): VSH utility mount of /dev_hdd0 faked (thread id 0x%x)", ppu.id);
+			return CELL_OK;
+		}
+
 		return {CELL_EBUSY, device_name};
+	}
 
 	if (vfs_path.empty())
 		return {CELL_ENOTSUP, device_name};
@@ -3955,6 +3970,13 @@ error_code sys_fs_unmount(ppu_thread& ppu, vm::cptr<char> path, s32 unk1, s32 fo
 	if (path_error)
 	{
 		return {path_error, vpath};
+	}
+
+	if (Emu.IsVsh() && vpath == "/dev_hdd0"sv && s_vsh_fake_hdd0_mount_thread.compare_and_swap_test(ppu.id, 0))
+	{
+		// Matching unmount of the faked utility mount from sys_fs_mount: /dev_hdd0 stays mounted
+		sys_fs.warning("sys_fs_unmount(): VSH unmount of the faked utility mount of /dev_hdd0 skipped");
+		return CELL_OK;
 	}
 
 	const auto& mp = g_fxo->get<lv2_fs_mount_info_map>().lookup(vpath);
