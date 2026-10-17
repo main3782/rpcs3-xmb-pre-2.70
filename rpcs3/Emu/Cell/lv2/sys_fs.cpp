@@ -2873,6 +2873,27 @@ error_code sys_fs_fcntl(ppu_thread& ppu, u32 fd, u32 op, vm::ptr<void> _arg, u32
 		break;
 	}
 
+	case 0x00000003: // Unknown, used by the VSH filesystem check (libfs_utility, 0xf4b74) on a /dev_hdd0 directory fd, arg size 0x10
+	case 0x00000004: // Unknown, same caller (0xf4958), arg size 0x38
+	{
+		// Meaning unknown. Without this the generic fallthrough below returns CELL_OK without touching the buffer, so the guest
+		// reads uninitialized stack memory and the check result ("sys_init: fsck returned invalid value: 0x8") is random.
+		// Hand back zeroes instead, so at least the outcome is deterministic.
+		static atomic_t<u32> s_log_count = 0;
+
+		if (s_log_count++ < 20)
+		{
+			sys_fs.warning("sys_fs_fcntl(): op 0x%x (fd=%d, arg=*0x%x, size=0x%x) -> returning zeroes", op, fd, _arg, _size);
+		}
+
+		if (_arg && _size && _size <= 0x100 && vm::check_addr(_arg.addr(), vm::page_writable, _size))
+		{
+			std::memset(_arg.get_ptr(), 0, _size);
+		}
+
+		return CELL_OK;
+	}
+
 	case 0xe0000000: // Unknown (cellFsGetBlockSize)
 	{
 		break;
