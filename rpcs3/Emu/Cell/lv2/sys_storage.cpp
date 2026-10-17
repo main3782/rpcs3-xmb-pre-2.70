@@ -61,6 +61,8 @@ namespace
 			const std::string path = fs::get_config_dir() + "vsh_hdd_sectors.bin";
 			usz valid_size = 0;
 
+			sys_storage.notice("HDD sector store: using '%s' (existing file: %s)", path, fs::is_file(path) ? "yes" : "no");
+
 			if (fs::file in{path})
 			{
 				std::vector<u8> buf(record_size * 256);
@@ -116,7 +118,10 @@ namespace
 				sys_storage.notice("HDD sector store: loaded %u sectors from '%s'", sector_count, path);
 			}
 
-			log.open(path, fs::write + fs::create + fs::append);
+			if (!log.open(path, fs::write + fs::create + fs::append))
+			{
+				sys_storage.error("HDD sector store: failed to open '%s' for writing (%s), the formatted disk will not be remembered", path, fs::g_tls_error);
+			}
 		}
 
 		// Must be called with the mutex held
