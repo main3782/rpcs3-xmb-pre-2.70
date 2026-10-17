@@ -3,6 +3,7 @@
 #include <array>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include "Emu/IdManager.h"
 #include "Emu/Memory/vm.h"
@@ -27,14 +28,106 @@ namespace
 
 namespace
 {
-	// In-memory sparse backing store for the emulated internal HDD (every region of it), so that what VSH writes with sys_storage_write
+	// Sparse backing store for the emulated internal HDD (every region of it), so that what VSH writes with sys_storage_write
 	// while formatting can be read back with sys_storage_read. The 2.17 format/restore routine verifies the filesystem it just wrote
-	// ("cg 0: bad magic number" -> assertion -> crash if the readback is all zeros).
-	// Sectors that were never written, or were written as all zeros, read back as zeros. Contents are not persisted between sessions.
+	// ("cg 0: bad magic number" -> assertion -> crash if the readback is all zeros), and its filesystem check on every boot reads it again.
+	// Sectors that were never written, or were written as all zeros, read back as zeros.
+	// The contents are persisted in an append-only log file (vsh_hdd_sectors.bin in the RPCS3 data directory), so a formatted disk survives
+	// restarts of RPCS3. Delete that file to get an unformatted disk again.
 	struct hdd_sector_store
 	{
+		// One log record: device id, sector number, sector data
+		static constexpr usz record_size = 8 + 8 + 0x200;
+
 		std::mutex mutex;
 		std::unordered_map<u64, std::unordered_map<u64, std::array<u8, 0x200>>> devices; // device id -> sector number -> data
+		fs::file log;
+		bool loaded = false;
+
+		static bool is_zero(const u8* data)
+		{
+			static constexpr std::array<u8, 0x200> zero_sector{};
+			return std::memcmp(data, zero_sector.data(), 0x200) == 0;
+		}
+
+		// Must be called with the mutex held
+		void load()
+		{
+			if (std::exchange(loaded, true))
+			{
+				return;
+			}
+
+			const std::string path = fs::get_config_dir() + "vsh_hdd_sectors.bin";
+			usz valid_size = 0;
+
+			if (fs::file in{path})
+			{
+				std::vector<u8> buf(record_size * 256);
+
+				while (true)
+				{
+					const u64 got = in.read(buf.data(), buf.size());
+
+					if (got < record_size)
+					{
+						break;
+					}
+
+					for (usz pos = 0; pos + record_size <= got; pos += record_size)
+					{
+						u64 device = 0, sector = 0;
+						std::memcpy(&device, buf.data() + pos, 8);
+						std::memcpy(&sector, buf.data() + pos + 8, 8);
+						const u8* data = buf.data() + pos + 16;
+
+						if (is_zero(data))
+						{
+							devices[device].erase(sector);
+						}
+						else
+						{
+							std::memcpy(devices[device][sector].data(), data, 0x200);
+						}
+
+						valid_size += record_size;
+					}
+
+					if (got < buf.size())
+					{
+						break;
+					}
+				}
+
+				// Drop a partially written record at the end (e.g. after a crash), so new records stay aligned
+				if (valid_size != in.size())
+				{
+					fs::file fix{path, fs::write};
+					fix.trunc(valid_size);
+				}
+
+				u64 sector_count = 0;
+
+				for (const auto& dev : devices)
+				{
+					sector_count += dev.second.size();
+				}
+
+				sys_storage.notice("HDD sector store: loaded %u sectors from '%s'", sector_count, path);
+			}
+
+			log.open(path, fs::write + fs::create + fs::append);
+		}
+
+		// Must be called with the mutex held
+		void append_record(std::vector<u8>& out, u64 device, u64 sector, const u8* data)
+		{
+			const usz pos = out.size();
+			out.resize(pos + record_size);
+			std::memcpy(out.data() + pos, &device, 8);
+			std::memcpy(out.data() + pos + 8, &sector, 8);
+			std::memcpy(out.data() + pos + 16, data, 0x200);
+		}
 	};
 
 	hdd_sector_store& get_hdd_store()
@@ -105,6 +198,7 @@ error_code sys_storage_read(u32 fd, u32 mode, u32 start_sector, u32 num_sectors,
 	{
 		auto& store = get_hdd_store();
 		std::lock_guard lock(store.mutex);
+		store.load();
 
 		if (const auto dev = store.devices.find(handle->device_id); dev != store.devices.end())
 		{
@@ -157,24 +251,42 @@ error_code sys_storage_write(u32 fd, u32 mode, u32 start_sector, u32 num_sectors
 		}
 
 		const u8* src = static_cast<const u8*>(data.get_ptr());
-		static constexpr std::array<u8, 0x200> zero_sector{};
 
 		auto& store = get_hdd_store();
 		std::lock_guard lock(store.mutex);
+		store.load();
 		auto& dev = store.devices[handle->device_id];
+
+		std::vector<u8> records;
 
 		for (u32 i = 0; i < num_sectors; i++)
 		{
 			const u8* sector_data = src + i * 0x200ull;
+			const u64 sector = u64{start_sector} + i;
 
-			if (std::memcmp(sector_data, zero_sector.data(), 0x200) == 0)
+			if (hdd_sector_store::is_zero(sector_data))
 			{
-				dev.erase(u64{start_sector} + i);
+				// Only a sector that currently holds data needs a record (an all-zero record means "erase")
+				if (dev.erase(sector))
+				{
+					store.append_record(records, handle->device_id, sector, sector_data);
+				}
 			}
 			else
 			{
-				std::memcpy(dev[u64{start_sector} + i].data(), sector_data, 0x200);
+				auto& stored = dev[sector];
+
+				if (std::memcmp(stored.data(), sector_data, 0x200) != 0)
+				{
+					std::memcpy(stored.data(), sector_data, 0x200);
+					store.append_record(records, handle->device_id, sector, sector_data);
+				}
 			}
+		}
+
+		if (!records.empty() && store.log)
+		{
+			store.log.write(records.data(), records.size());
 		}
 	}
 
