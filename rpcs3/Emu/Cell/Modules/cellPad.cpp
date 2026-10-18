@@ -734,6 +734,20 @@ error_code cellPadGetData(u32 port_no, vm::ptr<CellPadData> data)
 
 	pad_get_data(port_no, data.get_ptr());
 
+	if (Emu.IsVsh())
+	{
+		// Diagnostic (2.17 VSH bring-up): log every change of the digital button words VSH reads, to see whether a PS button press arrives
+		static atomic_t<u32> s_last = 0xffffffffu;
+		static atomic_t<u32> s_logs = 0;
+
+		const u32 digital = (static_cast<u32>(+data->button[CELL_PAD_BTN_OFFSET_DIGITAL1]) << 16) | static_cast<u32>(+data->button[CELL_PAD_BTN_OFFSET_DIGITAL2]);
+
+		if (s_last.exchange(digital) != digital && s_logs++ < 60)
+		{
+			cellPad.warning("VSH diag: cellPadGetData(port_no=%u) len=%d digital1=0x%04x digital2=0x%04x", port_no, +data->len, digital >> 16, digital & 0xffff);
+		}
+	}
+
 	if (g_cfg.io.pad_debug_overlay && !g_cfg.video.debug_overlay && port_no == 0)
 	{
 		show_debug_overlay(*data, *pad, config);
