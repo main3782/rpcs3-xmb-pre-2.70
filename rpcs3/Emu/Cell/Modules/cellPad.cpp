@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Emu/IdManager.h"
+#include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_process.h"
@@ -256,6 +257,11 @@ extern void pad_state_notify_state_change(usz index, u32 state)
 
 error_code cellPadInit(ppu_thread& ppu, u32 max_connect)
 {
+	if (Emu.IsVsh())
+	{
+		cellPad.warning("VSH diag: cellPadInit(max_connect=%u)", max_connect);
+	}
+
 	cellPad.warning("cellPadInit(max_connect=%d)", max_connect);
 
 	std::lock_guard lock(pad::g_pad_mutex);
@@ -694,6 +700,16 @@ void pad_get_data(u32 port_no, CellPadData* data, bool get_periph_data = false)
 
 error_code cellPadGetData(u32 port_no, vm::ptr<CellPadData> data)
 {
+	if (Emu.IsVsh())
+	{
+		static atomic_t<u32> s_count = 0;
+
+		if (s_count++ < 10)
+		{
+			cellPad.warning("VSH diag: cellPadGetData(port_no=%u)", port_no);
+		}
+	}
+
 	cellPad.trace("cellPadGetData(port_no=%d, data=*0x%x)", port_no, data);
 
 	std::lock_guard lock(pad::g_pad_mutex);
@@ -950,6 +966,17 @@ error_code cellPadGetInfo(vm::ptr<CellPadInfo> info)
 	}
 
 	info->now_connect = now_connect;
+
+	if (Emu.IsVsh())
+	{
+		static atomic_t<u32> s_count = 0;
+
+		if (s_count++ < 30)
+		{
+			cellPad.warning("VSH diag: cellPadGetInfo -> max_connect=%u now_connect=%u status[0]=0x%x vendor[0]=0x%x product[0]=0x%x", +info->max_connect, now_connect, +info->status[0], +info->vendor_id[0], +info->product_id[0]);
+		}
+	}
+
 	return CELL_OK;
 }
 
@@ -999,11 +1026,32 @@ error_code cellPadGetInfo2(vm::ptr<CellPadInfo2> info)
 	}
 
 	info->now_connect = now_connect;
+
+	if (Emu.IsVsh())
+	{
+		static atomic_t<u32> s_count = 0;
+
+		if (s_count++ < 30)
+		{
+			cellPad.warning("VSH diag: cellPadGetInfo2 -> max_connect=%u now_connect=%u port_status[0]=0x%x port_setting[0]=0x%x device_capability[0]=0x%x device_type[0]=%u", +info->max_connect, now_connect, +info->port_status[0], +info->port_setting[0], +info->device_capability[0], +info->device_type[0]);
+		}
+	}
+
 	return CELL_OK;
 }
 
 error_code cellPadGetCapabilityInfo(u32 port_no, vm::ptr<CellPadCapabilityInfo> info)
 {
+	if (Emu.IsVsh())
+	{
+		static atomic_t<u32> s_count = 0;
+
+		if (s_count++ < 10)
+		{
+			cellPad.warning("VSH diag: cellPadGetCapabilityInfo(port_no=%u)", port_no);
+		}
+	}
+
 	cellPad.trace("cellPadGetCapabilityInfo(port_no=%d, data_addr:=0x%x)", port_no, info.addr());
 
 	std::lock_guard lock(pad::g_pad_mutex);

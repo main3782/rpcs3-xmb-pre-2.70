@@ -1978,6 +1978,25 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 			g_fxo->get<patch_engine>().apply(_applied, Emu.GetTitleID() + '-' + hash_seg, [&](u32 addr, u32 size) { return prx->get_ptr<u8>(addr + seg.addr, size); }, seg.size);
 		}
 
+		// Built-in 2.17 VSH bring-up patch (vshmain.sprx, segment 0): sys_init's boot-time filesystem check (function at +0xFA80) accepts only the
+		// fsck results 0 and 7, and RPCS3 (no real HDD) never gets either, which raises the "file system is corrupted and will be restored"
+		// dialog on every boot. At +0xFBC8 the two fsck call paths merge; force the result to 0 there.
+		// 0xFBC8: cmpwi cr6,r3,0 -> li r3,0       0xFBCC: mr r4,r3 -> cmpwi cr6,r3,0
+		if (hash_seg == "PRX-tnSJ0wmhToTFT8KpmaZGeya8a5q2-0"sv)
+		{
+			const auto p0 = prx->get_ptr<u32>(seg.addr + 0xFBC8, 4);
+			const auto p1 = prx->get_ptr<u32>(seg.addr + 0xFBCC, 4);
+
+			if (p0 && p1 && *p0 == 0x2F030000 && *p1 == 0x7C641B78)
+			{
+				*p0 = 0x38600000;
+				*p1 = 0x2F030000;
+				_applied.push_back(0xFBC8);
+				_applied.push_back(0xFBCC);
+				ppu_loader.warning("Built-in VSH patch applied: fsck result of vshmain.sprx forced to 0");
+			}
+		}
+
 		// Rebase patch offsets
 		std::for_each(_applied.begin(), _applied.end(), [&](u32& res) { if (res != umax) res += seg.addr; });
 
