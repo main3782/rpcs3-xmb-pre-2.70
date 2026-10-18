@@ -270,6 +270,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	EnhanceCheckBox(emu_settings_type::SPULoopDetection, ui->spuLoopDetection, tooltips.settings.spu_loop_detection);
 	EnhanceCheckBox(emu_settings_type::PPUReservationPriorityOverSPUs, ui->ppuReservationPrority, tooltips.settings.ppu_reservation_priority);
 	EnhanceCheckBox(emu_settings_type::AccurateSpuReservations, ui->accurateSpuReservations, tooltips.settings.accurate_spu_reservations);
+	EnhanceCheckBox(emu_settings_type::SPUMmioDelay, ui->spuMmioDelay, tooltips.settings.spu_mmio_delay);
 
 	// Comboboxes
 	EnhanceComboBox(emu_settings_type::XFloatAccuracy, ui->xfloatAccuracy, tooltips.settings.xfloat, ui->gb_xfloat_accuracy);
@@ -1092,7 +1093,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->m_microphone_creator.refresh_list();
 	propagate_used_devices(); // Fills comboboxes list
 
-	m_emu_settings->m_microphone_creator.parse_devices(m_emu_settings->GetSetting(emu_settings_type::MicrophoneDevices));
+	m_emu_settings->m_microphone_creator.update_device_selection(m_emu_settings->GetSetting(emu_settings_type::MicrophoneDevices));
 
 	const std::array<std::string, 4>& mic_sel_list = m_emu_settings->m_microphone_creator.get_selection_list();
 
@@ -1276,7 +1277,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->m_midi_creator.refresh_list();
 	propagate_midi_devices(); // Fills comboboxes list
 
-	m_emu_settings->m_midi_creator.parse_devices(m_emu_settings->GetSetting(emu_settings_type::MidiDevices));
+	m_emu_settings->m_midi_creator.update_device_selection(m_emu_settings->GetSetting(emu_settings_type::MidiDevices));
 
 	const std::array<midi_device, max_midi_devices>& midi_sel_list = m_emu_settings->m_midi_creator.get_selection_list();
 
