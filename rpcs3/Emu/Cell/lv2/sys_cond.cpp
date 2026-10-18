@@ -2,6 +2,7 @@
 
 #include "util/serialization.hpp"
 #include "Emu/IdManager.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 
 #include "Emu/Cell/ErrorCodes.h"
@@ -427,9 +428,47 @@ error_code sys_cond_signal_to(ppu_thread& ppu, u32 cond_id, u32 thread_id)
 	}
 }
 
+// Diagnostic (2.17 VSH bring-up): where in guest code is the current thread (LR + saved return addresses up the stack)?
+static std::string cond_caller_trace(ppu_thread& ppu)
+{
+	std::string out = fmt::format("lr=0x%x bt=[", static_cast<u32>(ppu.lr));
+	u32 sp = static_cast<u32>(ppu.gpr[1]);
+
+	for (u32 i = 0; i < 14; i++)
+	{
+		if (!vm::check_addr(sp, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		const u32 back = static_cast<u32>(vm::_ref<u64>(sp));
+
+		if (back <= sp || !vm::check_addr(back + 0x10, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		fmt::append(out, "%s0x%x", i ? " " : "", static_cast<u32>(vm::_ref<u64>(back + 0x10)));
+		sp = back;
+	}
+
+	out += "]";
+	return out;
+}
+
 error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 {
 	ppu.state += cpu_flag::wait;
+
+	if (const auto name = ppu.ppu_tname.load(); name && name->find("hidportassign") != umax)
+	{
+		static atomic_t<u32> s_count = 0;
+
+		if (s_count++ < 4)
+		{
+			sys_cond.warning("hidportassign sys_cond_wait(cond_id=0x%x, timeout=%lld): %s", cond_id, timeout, cond_caller_trace(ppu));
+		}
+	}
 
 	sys_cond.trace("sys_cond_wait(cond_id=0x%x, timeout=%lld)", cond_id, timeout);
 

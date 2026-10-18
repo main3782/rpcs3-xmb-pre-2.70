@@ -5,6 +5,7 @@
 
 #include <queue>
 #include "Emu/System.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/system_config.h"
 #include "Emu/IdManager.h"
 #include "Emu/vfs_config.h"
@@ -1167,6 +1168,34 @@ void handle_hotplug_event(bool connected, bool source_is_libusb)
 	}
 }
 
+// Diagnostic (2.17 VSH bring-up): where in guest code is the current thread (LR + saved return addresses up the stack)?
+static std::string usbd_caller_trace(ppu_thread& ppu)
+{
+	std::string out = fmt::format("lr=0x%x bt=[", static_cast<u32>(ppu.lr));
+	u32 sp = static_cast<u32>(ppu.gpr[1]);
+
+	for (u32 i = 0; i < 14; i++)
+	{
+		if (!vm::check_addr(sp, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		const u32 back = static_cast<u32>(vm::_ref<u64>(sp));
+
+		if (back <= sp || !vm::check_addr(back + 0x10, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		fmt::append(out, "%s0x%x", i ? " " : "", static_cast<u32>(vm::_ref<u64>(back + 0x10)));
+		sp = back;
+	}
+
+	out += "]";
+	return out;
+}
+
 error_code sys_usbd_initialize(ppu_thread& ppu, vm::ptr<u32> handle)
 {
 	ppu.state += cpu_flag::wait;
@@ -1178,15 +1207,8 @@ error_code sys_usbd_initialize(ppu_thread& ppu, vm::ptr<u32> handle)
 	{
 		std::lock_guard lock(usbh.mutex);
 
-		// lv2 allows multiple handles/initializations of the USB subsystem.
-		// Older firmware/VSH revisions rely on this and call sys_usbd_initialize
-		// more than once during boot. Since this HLE implementation only models
-		// a single shared subsystem state (not per-handle), treat re-init as a
-		// no-op success instead of hard-failing, to match observed lv2 behavior.
-		if (usbh.is_init.exchange(true))
-		{
-			sys_usbd.notice("sys_usbd_initialize: subsystem already initialized, returning existing state");
-		}
+		// Must not occur (lv2 allows multiple handles, cellUsbd does not)
+		ensure(!usbh.is_init.exchange(true));
 	}
 
 	ppu.check_state();
@@ -1236,6 +1258,8 @@ error_code sys_usbd_get_device_list(ppu_thread& ppu, u32 handle, vm::ptr<UsbInte
 	// TODO: was std::min<s32>
 	const u32 i_tocopy = std::min<u32>(max_devices, ::size32(usbh.handled_devices));
 	u32 index = 0;
+
+	sys_usbd.warning("sys_usbd_get_device_list(): returning %u of %u device(s) %s", i_tocopy, ::size32(usbh.handled_devices), usbd_caller_trace(ppu));
 
 	for (const auto& [_, device] : usbh.handled_devices)
 	{
@@ -1438,6 +1462,16 @@ error_code sys_usbd_close_pipe(ppu_thread& ppu, u32 handle, u32 pipe_handle)
 // *arg1 == 1 || *arg1 == 2 will send a sys_event to internal CellUsbd event queue with same parameters as received and loop(attach and detach event)
 error_code sys_usbd_receive_event(ppu_thread& ppu, u32 handle, vm::ptr<u64> arg1, vm::ptr<u64> arg2, vm::ptr<u64> arg3)
 {
+	if (Emu.IsVsh())
+	{
+		static atomic_t<u32> s_count = 0;
+
+		if (s_count++ < 4)
+		{
+			sys_usbd.warning("sys_usbd_receive_event(): VSH call %s", usbd_caller_trace(ppu));
+		}
+	}
+
 	ppu.state += cpu_flag::wait;
 
 	sys_usbd.trace("sys_usbd_receive_event(handle=0x%x, arg1=*0x%x, arg2=*0x%x, arg3=*0x%x)", handle, arg1, arg2, arg3);
