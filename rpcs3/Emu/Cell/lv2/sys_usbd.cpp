@@ -1207,8 +1207,11 @@ error_code sys_usbd_initialize(ppu_thread& ppu, vm::ptr<u32> handle)
 	{
 		std::lock_guard lock(usbh.mutex);
 
-		// Must not occur (lv2 allows multiple handles, cellUsbd does not)
-		ensure(!usbh.is_init.exchange(true));
+		// VSH (firmware 2.20 to 2.60) calls this twice; lv2 allows multiple handles, so just note it instead of aborting
+		if (usbh.is_init.exchange(true))
+		{
+			sys_usbd.warning("sys_usbd_initialize(): subsystem already initialized");
+		}
 	}
 
 	ppu.check_state();
