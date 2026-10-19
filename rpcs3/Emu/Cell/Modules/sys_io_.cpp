@@ -1,4 +1,7 @@
 #include "stdafx.h"
+#include <vector>
+#include <algorithm>
+#include <mutex>
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
@@ -219,6 +222,53 @@ static void sys_io_config_diag(ppu_thread& ppu, const char* name)
 	sys_io.warning("%s", out);
 }
 
+// Diagnostic (2.17 VSH bring-up): dump the first 128 instruction words of a guest callback once.
+// fd_addr is the address of a function descriptor {code, toc}.
+static void sys_io_dump_callback(const char* what, u32 fd_addr)
+{
+	if (!vm::check_addr(fd_addr, vm::page_readable, 8))
+	{
+		return;
+	}
+
+	const u32 code = static_cast<u32>(vm::_ref<u32>(fd_addr));
+	const u32 toc = static_cast<u32>(vm::_ref<u32>(fd_addr + 4));
+
+	if (code < 0x10000 || code >= 0x10000000 || (code & 3) || !vm::check_addr(code, vm::page_readable, 512))
+	{
+		sys_io.warning("VSH diag: callback %s fd=0x%x does not look like a descriptor (code=0x%x toc=0x%x)", what, fd_addr, code, toc);
+		return;
+	}
+
+	static shared_mutex s_mtx;
+	static std::vector<u32> s_seen;
+
+	{
+		std::lock_guard lock(s_mtx);
+
+		if (std::find(s_seen.begin(), s_seen.end(), code) != s_seen.end() || s_seen.size() >= 64)
+		{
+			return;
+		}
+
+		s_seen.push_back(code);
+	}
+
+	std::string out = fmt::format("VSH diag: callback %s fd=0x%x code=0x%x toc=0x%x", what, fd_addr, code, toc);
+
+	for (u32 i = 0; i < 128; i++)
+	{
+		if (i % 8 == 0)
+		{
+			fmt::append(out, "\n    %08x:", code + i * 4);
+		}
+
+		fmt::append(out, " %08x", static_cast<u32>(vm::_ref<u32>(code + i * 4)));
+	}
+
+	sys_io.warning("%s", out);
+}
+
 error_code sys_config_start(ppu_thread& ppu)
 {
 	sys_io.warning("sys_config_start()");
@@ -276,8 +326,23 @@ error_code sys_config_stop(ppu_thread& ppu)
 
 error_code sys_config_add_service_listener(ppu_thread& ppu)
 {
+	// Signature recovered from the 2.17 VSH log (chat #3):
+	// (r3 service_id, r4 min_verbosity, r5 filter*, r6 filter_size [0x1a = sizeof sys_config_padmanager_data_t],
+	//  r7 callbacks* -> {fd*, fd*}, r8 type [1 = repeating], r9 out_handle*, r10 user_arg)
 	sys_io.todo("sys_config_add_service_listener()");
 	sys_io_config_diag(ppu, "sys_config_add_service_listener");
+
+	if (Emu.IsVsh())
+	{
+		const u32 cbs = static_cast<u32>(ppu.gpr[7]);
+
+		if (cbs >= 0x10000 && vm::check_addr(cbs, vm::page_readable, 8))
+		{
+			sys_io_dump_callback("cb0", static_cast<u32>(vm::_ref<u32>(cbs)));
+			sys_io_dump_callback("cb1", static_cast<u32>(vm::_ref<u32>(cbs + 4)));
+		}
+	}
+
 	return CELL_OK;
 }
 
