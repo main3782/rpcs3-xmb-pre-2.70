@@ -3,6 +3,7 @@
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 
+#include "Emu/Memory/vm.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/lv2/sys_ppu_thread.h"
 #include "Emu/Cell/Modules/sysPrxForUser.h"
@@ -141,6 +142,83 @@ extern void send_sys_io_connect_event(usz index, u32 state)
 	}
 }
 
+// Diagnostic (2.17 VSH bring-up): libio's sys_config_* wrappers are stubs here, but VSH (x3::hidportassign etc.) relies on them
+// to learn about attached pads. Dump the raw register arguments (r3-r10), 48 bytes behind every plausible guest pointer,
+// and a guest call stack, so that the real signatures can be worked out from the log.
+static void sys_io_config_diag(ppu_thread& ppu, const char* name)
+{
+	if (!Emu.IsVsh())
+	{
+		return;
+	}
+
+	static atomic_t<u32> s_count = 0;
+
+	if (s_count++ >= 300)
+	{
+		return;
+	}
+
+	std::string out = fmt::format("VSH diag: %s(", name);
+
+	for (u32 i = 3; i <= 10; i++)
+	{
+		fmt::append(out, "%sr%u=0x%x", i > 3 ? ", " : "", i, ppu.gpr[i]);
+	}
+
+	out += ")";
+
+	for (u32 i = 3; i <= 10; i++)
+	{
+		const u64 val = ppu.gpr[i];
+
+		if (val < 0x10000 || val >= 0xf0000000)
+		{
+			continue;
+		}
+
+		const u32 addr = static_cast<u32>(val);
+
+		if (!vm::check_addr(addr, vm::page_readable, 48))
+		{
+			continue;
+		}
+
+		fmt::append(out, "\n    r%u -> *0x%x:", i, addr);
+
+		for (u32 j = 0; j < 48; j++)
+		{
+			fmt::append(out, "%s%02x", (j % 4) ? "" : " ", static_cast<u32>(vm::_ref<u8>(addr + j)));
+		}
+	}
+
+	fmt::append(out, "\n    lr=0x%x bt=[", static_cast<u32>(ppu.lr));
+
+	u32 sp = static_cast<u32>(ppu.gpr[1]);
+
+	for (u32 i = 0; i < 14; i++)
+	{
+		if (!vm::check_addr(sp, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		const u32 back = static_cast<u32>(vm::_ref<u64>(sp));
+
+		if (back <= sp || !vm::check_addr(back + 0x10, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		fmt::append(out, "%s0x%x", i ? " " : "", static_cast<u32>(vm::_ref<u64>(back + 0x10)));
+		sp = back;
+	}
+
+	out += "]";
+
+	sys_io.warning("%s", out);
+}
+
 error_code sys_config_start(ppu_thread& ppu)
 {
 	sys_io.warning("sys_config_start()");
@@ -196,39 +274,45 @@ error_code sys_config_stop(ppu_thread& ppu)
 	return CELL_OK;
 }
 
-error_code sys_config_add_service_listener()
+error_code sys_config_add_service_listener(ppu_thread& ppu)
 {
 	sys_io.todo("sys_config_add_service_listener()");
+	sys_io_config_diag(ppu, "sys_config_add_service_listener");
 	return CELL_OK;
 }
 
-error_code sys_config_remove_service_listener()
+error_code sys_config_remove_service_listener(ppu_thread& ppu)
 {
 	sys_io.todo("sys_config_remove_service_listener()");
+	sys_io_config_diag(ppu, "sys_config_remove_service_listener");
 	return CELL_OK;
 }
 
-error_code sys_config_register_io_error_handler()
+error_code sys_config_register_io_error_handler(ppu_thread& ppu)
 {
 	sys_io.todo("sys_config_register_io_error_handler()");
+	sys_io_config_diag(ppu, "sys_config_register_io_error_handler");
 	return CELL_OK;
 }
 
-error_code sys_config_register_service()
+error_code sys_config_register_service(ppu_thread& ppu)
 {
 	sys_io.todo("sys_config_register_service()");
+	sys_io_config_diag(ppu, "sys_config_register_service");
 	return CELL_OK;
 }
 
-error_code sys_config_unregister_io_error_handler()
+error_code sys_config_unregister_io_error_handler(ppu_thread& ppu)
 {
 	sys_io.todo("sys_config_unregister_io_error_handler()");
+	sys_io_config_diag(ppu, "sys_config_unregister_io_error_handler");
 	return CELL_OK;
 }
 
-error_code sys_config_unregister_service()
+error_code sys_config_unregister_service(ppu_thread& ppu)
 {
 	sys_io.todo("sys_config_unregister_service()");
+	sys_io_config_diag(ppu, "sys_config_unregister_service");
 	return CELL_OK;
 }
 
