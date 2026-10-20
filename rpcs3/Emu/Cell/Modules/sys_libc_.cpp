@@ -456,15 +456,61 @@ s32 _sys_sprintf(ppu_thread& ppu, vm::ptr<char> buffer, vm::cptr<char> fmt, ppu_
 	return static_cast<s32>(result.size());
 }
 
-error_code _sys_vprintf()
+// Diagnostic (VSH bring-up): decode the first slots of a PPC64 va_list (8 bytes each) as hex, and as a string when the low half
+// of a slot points at readable printable text. The real vprintf/vsnprintf are not implemented, but VSH's fsck reports its failure
+// reason through them.
+static std::string libc_peek_va_list(u32 ap)
 {
-	sysPrxForUser.todo("_sys_vprintf()");
+	std::string out;
+
+	if (ap < 0x10000 || !vm::check_addr(ap, vm::page_readable, 48))
+	{
+		return out;
+	}
+
+	for (u32 i = 0; i < 6; i++)
+	{
+		const u64 slot = vm::_ref<u64>(ap + i * 8);
+
+		fmt::append(out, " [%u]=0x%x", i, slot);
+
+		const u32 ptr = static_cast<u32>(slot);
+
+		if (ptr >= 0x10000 && vm::check_addr(ptr, vm::page_readable, 1))
+		{
+			std::string str;
+
+			for (u32 k = 0; k < 64 && vm::check_addr(ptr + k, vm::page_readable, 1); k++)
+			{
+				const u8 c = vm::_ref<u8>(ptr + k);
+
+				if (c == 0)
+				{
+					break;
+				}
+
+				str += (c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '?';
+			}
+
+			if (str.size() >= 3 && str.find('?') == std::string::npos)
+			{
+				fmt::append(out, "(\"%s\")", str);
+			}
+		}
+	}
+
+	return out;
+}
+
+error_code _sys_vprintf(vm::cptr<char> format, u32 ap)
+{
+	sysPrxForUser.todo("_sys_vprintf(format=%s, ap=*0x%x):%s", format, ap, libc_peek_va_list(ap));
 	return CELL_OK;
 }
 
-error_code _sys_vsnprintf()
+error_code _sys_vsnprintf(vm::ptr<char> dst, u32 count, vm::cptr<char> format, u32 ap)
 {
-	sysPrxForUser.todo("_sys_vsnprintf()");
+	sysPrxForUser.todo("_sys_vsnprintf(dst=*0x%x, count=%d, format=%s, ap=*0x%x):%s", dst, count, format, ap, libc_peek_va_list(ap));
 	return CELL_OK;
 }
 

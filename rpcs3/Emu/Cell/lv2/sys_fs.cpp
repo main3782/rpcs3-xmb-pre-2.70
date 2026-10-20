@@ -2118,6 +2118,46 @@ error_code sys_fs_fstat(ppu_thread& ppu, u32 fd, vm::ptr<CellFsStat> sb)
 
 	if (!file)
 	{
+		// Real lv2 keeps files and directories in a single fd table, so fstat on a directory fd is valid.
+		// VSH's boot-time fsck (libfs_utility) calls it on the fd that opendir("/dev_hdd0") returned; failing with EBADF made it
+		// give up and return 8, which raised the "file system is corrupted" dialog on every boot (all firmware versions).
+		if (const auto dir = idm::get_unlocked<lv2_fs_object, lv2_dir>(fd))
+		{
+			fs::stat_t info{};
+
+			{
+				std::unique_lock lock(dir->mp->mutex);
+
+				const std::string local_path = vfs::get(dir->name.data());
+
+				if (local_path.empty() || !fs::get_stat(local_path, info))
+				{
+					info = {};
+					info.is_directory = true;
+				}
+			}
+
+			ppu.check_state();
+
+			s32 mode = CELL_FS_S_IFDIR | 0777;
+
+			if ((dir->mp.read_only || dir->mp->flags & lv2_mp_flag::read_only))
+			{
+				// Remove write permissions
+				mode &= ~0222;
+			}
+
+			sb->mode = mode;
+			sb->uid = dir->mp->flags & lv2_mp_flag::no_uid_gid ? -1 : 0;
+			sb->gid = dir->mp->flags & lv2_mp_flag::no_uid_gid ? -1 : 0;
+			sb->atime = info.atime;
+			sb->mtime = info.mtime;
+			sb->ctime = info.ctime;
+			sb->size = info.size;
+			sb->blksize = dir->mp->block_size;
+			return CELL_OK;
+		}
+
 		return CELL_EBADF;
 	}
 
