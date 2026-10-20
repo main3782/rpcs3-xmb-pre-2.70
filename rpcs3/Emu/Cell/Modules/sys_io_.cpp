@@ -449,7 +449,7 @@ error_code sys_config_add_service_listener(ppu_thread& ppu)
 
 		if (out >= 0x10000 && vm::check_addr(out, vm::page_writable, 4))
 		{
-			vm::_ref<u32>(out) = l.handle;
+			vm::write32(out, l.handle);
 		}
 
 		sys_io.warning("VSH: sys_config listener 0x%x added: service=0x%x verbosity=%u filter_size=%u filter[0]=0x%02x type=%u cbs={0x%x, 0x%x} arg=0x%x",
