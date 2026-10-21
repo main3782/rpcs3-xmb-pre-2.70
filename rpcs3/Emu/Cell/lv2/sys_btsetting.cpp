@@ -24,6 +24,9 @@ error_code sys_btsetting_if(u64 cmd, vm::ptr<void> msg)
 // guess from the next log if the proxy needs more.
 error_code sys_usbbtaudio_initialize(ppu_thread& ppu)
 {
+	// vm::alloc takes the memory writer lock, which requires the thread to be in the wait state
+	ppu.state += cpu_flag::wait;
+
 	const u32 equeue_id = static_cast<u32>(ppu.gpr[3]);
 	const u32 out = static_cast<u32>(ppu.gpr[4]);
 
@@ -76,7 +79,10 @@ error_code sys_usbbtaudio_initialize(ppu_thread& ppu)
 			fmt::append(before, " %08x", static_cast<u32>(vm::_ref<u32>(out + i * 4)));
 		}
 
-		vm::write32(out, shm);
+		ppu.check_state();
+
+		const vm::ptr<u32> out_ptr = vm::cast(out);
+		*out_ptr = shm;
 
 		sys_btsetting.warning("VSH diag: sys_usbbtaudio_initialize: stored shared memory 0x%x at *0x%x (before:%s)", shm, out, before);
 	}
