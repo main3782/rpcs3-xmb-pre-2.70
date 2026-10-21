@@ -69,6 +69,67 @@ static std::string ps3_fmt(ppu_thread& context, vm::cptr<char> fmt, u32 g_count)
 	return result;
 }
 
+// Argument source for the v*printf family: a PPC64 va_list is a pointer to the parameter save area, i.e. a flat array of 8-byte slots
+// (integers and pointers in a full register image, floats as doubles), in argument order.
+struct ps3_fmt_va_src
+{
+	u32 ap;
+	u32 g_count;
+
+	static bool test(usz)
+	{
+		return true;
+	}
+
+	template <typename T>
+	T get(usz index) const
+	{
+		const u32 i = static_cast<u32>(index) + g_count;
+		return ppu_gpr_cast<T>(static_cast<u64>(vm::_ref<u64>(ap + i * 8)));
+	}
+
+	void skip(usz extra)
+	{
+		g_count += static_cast<u32>(extra) + 1;
+	}
+
+	usz fmt_string(std::string& out, usz extra) const
+	{
+		const usz start = out.size();
+		out += vm::_ptr<const char>(get<u32>(extra));
+		return out.size() - start;
+	}
+
+	static usz type(usz)
+	{
+		return 0;
+	}
+
+	static constexpr usz size_char  = 1;
+	static constexpr usz size_short = 2;
+	static constexpr usz size_int   = 4;
+	static constexpr usz size_long  = 4;
+	static constexpr usz size_llong = 8;
+	static constexpr usz size_size  = 4;
+	static constexpr usz size_max   = 8;
+	static constexpr usz size_diff  = 4;
+};
+
+template <>
+f64 ps3_fmt_va_src::get<f64>(usz index) const
+{
+	return std::bit_cast<f64>(get<u64>(index));
+}
+
+static std::string ps3_fmt_va(vm::cptr<char> fmt, u32 ap)
+{
+	std::string result;
+
+	cfmt_append(result, fmt.get_ptr(), ps3_fmt_va_src{ap, 0});
+
+	return result;
+}
+
 static const std::array<s16, 129> s_ctype_table
 {
 	0,
@@ -456,62 +517,31 @@ s32 _sys_sprintf(ppu_thread& ppu, vm::ptr<char> buffer, vm::cptr<char> fmt, ppu_
 	return static_cast<s32>(result.size());
 }
 
-// Diagnostic (VSH bring-up): decode the first slots of a PPC64 va_list (8 bytes each) as hex, and as a string when the low half
-// of a slot points at readable printable text. The real vprintf/vsnprintf are not implemented, but VSH's fsck reports its failure
-// reason through them.
-static std::string libc_peek_va_list(u32 ap)
+// No logging in here on purpose: VSH formats one character at a time through vsnprintf("%c") (30k+ calls while it converts its
+// PEM certificate bundle), and a log line per call makes the XMB crawl.
+error_code _sys_vprintf(ppu_thread& ppu, vm::cptr<char> fmt, u32 ap)
 {
-	std::string out;
+	const auto buf = vm::make_str(ps3_fmt_va(fmt, ap));
 
-	if (ap < 0x10000 || !vm::check_addr(ap, vm::page_readable, 48))
-	{
-		return out;
-	}
+	sys_tty_write(ppu, 0, buf, buf.get_count() - 1, vm::var<u32>{});
 
-	for (u32 i = 0; i < 6; i++)
-	{
-		const u64 slot = vm::_ref<u64>(ap + i * 8);
-
-		fmt::append(out, " [%u]=0x%x", i, slot);
-
-		const u32 ptr = static_cast<u32>(slot);
-
-		if (ptr >= 0x10000 && vm::check_addr(ptr, vm::page_readable, 1))
-		{
-			std::string str;
-
-			for (u32 k = 0; k < 64 && vm::check_addr(ptr + k, vm::page_readable, 1); k++)
-			{
-				const u8 c = vm::_ref<u8>(ptr + k);
-
-				if (c == 0)
-				{
-					break;
-				}
-
-				str += (c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '?';
-			}
-
-			if (str.size() >= 3 && str.find('?') == std::string::npos)
-			{
-				fmt::append(out, "(\"%s\")", str);
-			}
-		}
-	}
-
-	return out;
-}
-
-error_code _sys_vprintf(vm::cptr<char> format, u32 ap)
-{
-	sysPrxForUser.todo("_sys_vprintf(format=%s, ap=*0x%x):%s", format, ap, libc_peek_va_list(ap));
 	return CELL_OK;
 }
 
-error_code _sys_vsnprintf(vm::ptr<char> dst, u32 count, vm::cptr<char> format, u32 ap)
+s32 _sys_vsnprintf(vm::ptr<char> dst, u32 count, vm::cptr<char> fmt, u32 ap)
 {
-	sysPrxForUser.todo("_sys_vsnprintf(dst=*0x%x, count=%d, format=%s, ap=*0x%x):%s", dst, count, format, ap, libc_peek_va_list(ap));
-	return CELL_OK;
+	const std::string result = ps3_fmt_va(fmt, ap);
+
+	if (!count)
+	{
+		return 0;
+	}
+
+	count = static_cast<u32>(std::min<usz>(count - 1, result.size()));
+
+	std::memcpy(dst.get_ptr(), result.c_str(), count);
+	dst[count] = 0;
+	return count;
 }
 
 error_code _sys_vsprintf()
