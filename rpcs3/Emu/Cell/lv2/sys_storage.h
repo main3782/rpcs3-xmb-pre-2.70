@@ -80,3 +80,7 @@ error_code sys_storage_set_region_acl();
 error_code sys_storage_async_send_device_command(u32 dev_handle, u64 cmd, vm::ptr<void> in, u64 inlen, vm::ptr<void> out, u64 outlen, u64 unk);
 error_code sys_storage_get_region_offset();
 error_code sys_storage_set_emulated_speed();
+
+// Raw read/write view of one partition of the emulated internal HDD, backed by the same sector store that sys_storage_read/write use.
+// partition 1 = /dev_hdd0, 2 = /dev_hdd1. Used for the "utility" mount VSH's boot-time filesystem check opens (see sys_fs_open).
+fs::file make_vsh_hdd_raw_file(u32 partition);

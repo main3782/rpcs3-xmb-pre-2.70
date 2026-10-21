@@ -2,6 +2,7 @@
 #include "sys_sync.h"
 #include "sys_fs.h"
 #include "sys_memory.h"
+#include "sys_storage.h"
 #include "util/asm.hpp"
 
 #include "Emu/Cell/PPUThread.h"
@@ -1447,6 +1448,9 @@ lv2_file::open_result_t lv2_file::open(std::string_view vpath, s32 flags, s32 /*
 	return {.error = error, .ppath = std::move(path), .real_path = std::move(local_path), .file = std::move(file), .type = type};
 }
 
+// Thread id that "mounted" the HDD as a utility device for VSH's boot-time filesystem check (see sys_fs_mount), 0 if none
+static atomic_t<u32> s_vsh_fake_hdd0_mount_thread = 0;
+
 error_code sys_fs_open(ppu_thread& ppu, vm::cptr<char> path, s32 flags, vm::ptr<u32> fd, s32 mode, vm::cptr<void> arg, u64 size)
 {
 	lv2_obj::sleep(ppu);
@@ -1458,6 +1462,27 @@ error_code sys_fs_open(ppu_thread& ppu, vm::cptr<char> path, s32 flags, vm::ptr<
 	if (path_error)
 	{
 		return {path_error, vpath};
+	}
+
+	if (Emu.IsVsh() && ppu.id == s_vsh_fake_hdd0_mount_thread && vpath == "/dev_hdd0"sv)
+	{
+		// VSH's boot-time filesystem check "mounted" /dev_hdd0 as a utility device (see sys_fs_mount) and now opens it as a raw volume,
+		// which is what a real PS3 hands out in that situation. RPCS3 only has the host directory, so open() failed with EISDIR and
+		// the check returned 8 ("sys_init: fsck returned invalid value: 0x8") on every boot, for every firmware version.
+		const std::string raw_path = vpath;
+
+		if (const u32 id = idm::import<lv2_fs_object, lv2_file>([&]() -> shared_ptr<lv2_file>
+		{
+			return stx::make_shared<lv2_file>(raw_path, make_vsh_hdd_raw_file(1), mode, flags, raw_path, lv2_file_type::regular);
+		}))
+		{
+			sys_fs.warning("sys_fs_open(): VSH raw HDD volume of /dev_hdd0 opened as fd=%u", id);
+			ppu.check_state();
+			*fd = id;
+			return CELL_OK;
+		}
+
+		return {CELL_EMFILE, path};
 	}
 
 	auto [error, ppath, real, file, type] = lv2_file::open(vpath, flags, mode, arg.get_ptr(), size);
@@ -3880,9 +3905,6 @@ error_code sys_fs_newfs(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char>
 	sys_fs.success("sys_fs_newfs(): Successfully cleared \"%s\" at \"%s\"", device_name, vfs_path);
 	return CELL_OK;
 }
-
-// Thread id that "mounted" the HDD as a utility device for VSH's boot-time filesystem check (see sys_fs_mount), 0 if none
-static atomic_t<u32> s_vsh_fake_hdd0_mount_thread = 0;
 
 error_code sys_fs_mount(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char> file_system, vm::cptr<char> path, s32 unk1, s32 prot, s32 unk2, vm::cptr<char> str1, u32 str_len)
 {

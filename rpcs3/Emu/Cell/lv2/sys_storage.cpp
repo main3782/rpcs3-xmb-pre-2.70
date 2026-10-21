@@ -145,6 +145,182 @@ namespace
 	{
 		return (device & 0xFFFFF00FFFFFFFF) == ATA_HDD;
 	}
+
+	// Raw file view of one HDD partition. On a real PS3 the "utility" mount of /dev_hdd0 that VSH's boot-time filesystem check performs
+	// makes open("/dev_hdd0", O_RDWR) return the raw volume, which libfs_utility then seeks in and reads/writes. RPCS3 has a real host
+	// directory there (open fails with EISDIR, and the check gives up with result 8 on every boot), so hand out this instead.
+	class vsh_hdd_raw_file final : public fs::file_base
+	{
+		const u64 m_device;
+		const u64 m_sectors;
+		u64 m_pos = 0;
+		atomic_t<u32> m_log_count = 0;
+
+		void log_op(const char* op, u64 offset, u64 size)
+		{
+			if (m_log_count++ < 60)
+			{
+				sys_storage.warning("VSH raw HDD volume (device=0x%x): %s offset=0x%x size=0x%x", m_device, op, offset, size);
+			}
+		}
+
+	public:
+		vsh_hdd_raw_file(u64 device, u64 sectors)
+			: m_device(device)
+			, m_sectors(sectors)
+		{
+		}
+
+		fs::stat_t get_stat() override
+		{
+			fs::stat_t info{};
+			info.is_directory = false;
+			info.is_writable = true;
+			info.size = m_sectors * 0x200;
+			return info;
+		}
+
+		void sync() override
+		{
+		}
+
+		bool trunc(u64) override
+		{
+			return true;
+		}
+
+		u64 read(void* buffer, u64 size) override
+		{
+			const u64 result = read_at(m_pos, buffer, size);
+			m_pos += result;
+			return result;
+		}
+
+		u64 read_at(u64 offset, void* buffer, u64 size) override
+		{
+			const u64 total = m_sectors * 0x200;
+
+			size = offset >= total ? 0 : std::min<u64>(size, total - offset);
+
+			log_op("read", offset, size);
+
+			u8* dst = static_cast<u8*>(buffer);
+			std::memset(dst, 0, size);
+
+			auto& store = get_hdd_store();
+			std::lock_guard lock(store.mutex);
+			store.load();
+
+			if (const auto dev = store.devices.find(m_device); dev != store.devices.end())
+			{
+				for (u64 pos = offset; pos < offset + size;)
+				{
+					const u64 sector = pos / 0x200;
+					const u64 inner = pos % 0x200;
+					const u64 count = std::min<u64>(0x200 - inner, offset + size - pos);
+
+					if (const auto found = dev->second.find(sector); found != dev->second.end())
+					{
+						std::memcpy(dst + (pos - offset), found->second.data() + inner, count);
+					}
+
+					pos += count;
+				}
+			}
+
+			return size;
+		}
+
+		u64 write(const void* buffer, u64 size) override
+		{
+			const u64 total = m_sectors * 0x200;
+
+			size = m_pos >= total ? 0 : std::min<u64>(size, total - m_pos);
+
+			log_op("write", m_pos, size);
+
+			const u8* src = static_cast<const u8*>(buffer);
+
+			auto& store = get_hdd_store();
+			std::lock_guard lock(store.mutex);
+			store.load();
+			auto& dev = store.devices[m_device];
+
+			std::vector<u8> records;
+
+			for (u64 pos = m_pos; pos < m_pos + size;)
+			{
+				const u64 sector = pos / 0x200;
+				const u64 inner = pos % 0x200;
+				const u64 count = std::min<u64>(0x200 - inner, m_pos + size - pos);
+
+				std::array<u8, 0x200> data{};
+
+				if (const auto found = dev.find(sector); found != dev.end())
+				{
+					data = found->second;
+				}
+
+				std::memcpy(data.data() + inner, src + (pos - m_pos), count);
+
+				if (hdd_sector_store::is_zero(data.data()))
+				{
+					if (dev.erase(sector))
+					{
+						store.append_record(records, m_device, sector, data.data());
+					}
+				}
+				else
+				{
+					auto& stored = dev[sector];
+
+					if (std::memcmp(stored.data(), data.data(), 0x200) != 0)
+					{
+						std::memcpy(stored.data(), data.data(), 0x200);
+						store.append_record(records, m_device, sector, data.data());
+					}
+				}
+
+				pos += count;
+			}
+
+			if (!records.empty() && store.log)
+			{
+				store.log.write(records.data(), records.size());
+			}
+
+			m_pos += size;
+			return size;
+		}
+
+		u64 seek(s64 offset, fs::seek_mode whence) override
+		{
+			const s64 base = whence == fs::seek_set ? 0 : whence == fs::seek_cur ? static_cast<s64>(m_pos) : static_cast<s64>(m_sectors * 0x200);
+			const s64 result = base + offset;
+
+			if (result < 0)
+			{
+				fs::g_tls_error = fs::error::inval;
+				return umax;
+			}
+
+			m_pos = static_cast<u64>(result);
+			log_op("seek to", m_pos, 0);
+			return m_pos;
+		}
+
+		u64 size() override
+		{
+			return m_sectors * 0x200;
+		}
+	};
+}
+
+fs::file make_vsh_hdd_raw_file(u32 partition)
+{
+	// Same sizes sys_storage_get_device_info reports (partition 1 = hdd0, 2 = hdd1)
+	const u64 sectors = partition == 1 ? 0x24FAEA98 : 0x3FFFF8;
+	return fs::file(std::make_unique<vsh_hdd_raw_file>(ATA_HDD | (u64{partition} << 32), sectors));
 }
 
 error_code sys_storage_open(u64 device, u64 mode, vm::ptr<u32> fd, u64 flags)
