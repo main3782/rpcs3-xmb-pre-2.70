@@ -5057,7 +5057,16 @@ bool Emulator::IsVsh()
 {
 	const auto process = &g_ps3_process_info;
 
-	return process->self_info.valid && (process->self_info.prog_id_hdr.program_authority_id == 0x10700005FF000001L); // VSH.self ID
+	if (!process->self_info.valid)
+	{
+		return false;
+	}
+
+	const u64 authority_id = process->self_info.prog_id_hdr.program_authority_id;
+
+	// VSH.self ID. Firmware 2.00 and newer use 0x10700005FF000001, but 1.xx firmware (e.g. 1.80) signs vsh.self (like every other
+	// system SELF of that firmware) with 0x10700003FF000001. Games never use either of them.
+	return authority_id == 0x10700005FF000001ull || authority_id == 0x10700003FF000001ull;
 }
 
 bool Emulator::IsValidSfb(const std::string& path)
