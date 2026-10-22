@@ -1,7 +1,6 @@
 RPCS3 - XMB mods to get pre-2.70 to work
 =====
 <p align="center">
-  <img src="screenshots/0.94-Home.png" width="600" height="400" />
   <img src="screenshots/0.94-About.png" width="600" height="400" />
 </p>
 
