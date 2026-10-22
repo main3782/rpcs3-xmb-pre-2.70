@@ -1,8 +1,12 @@
 RPCS3 - XMB mods to get pre-2.70 to work
 =====
 
-These are a handful of patches that get XMB to work before version 2.70 on RPCS3. So far, versions 0.94!+ work.
+These are a handful of patches that get XMB to work before version 2.70 on RPCS3. So far, versions 0.94 and above work!
 
+
+
+
+Original RPCS3 readme:
 =====
 
 [![GitHub Actions](https://img.shields.io/github/actions/workflow/status/RPCS3/rpcs3/rpcs3.yml?branch=master&logo=github&label=Actions)](https://github.com/RPCS3/rpcs3/actions/workflows/rpcs3.yml)
