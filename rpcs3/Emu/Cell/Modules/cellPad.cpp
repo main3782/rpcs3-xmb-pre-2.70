@@ -1379,6 +1379,15 @@ s32 sys_io_3733EA3C(u32 port_no, vm::ptr<u32> device_type, vm::ptr<CellPadData> 
 	return cellPadGetDataExtra(port_no, device_type, data);
 }
 
+// Unnamed sys_io import (NID 0x13ED2BA4): the pad data read of the libio shipped with VSH 1.xx. VSH 1.02's pad import table has no
+// cellPadGetData; its polling routine (0x10521970) calls this with r3 = port number and r4 = pointer to a CellPadData buffer, expects
+// 0 on success, and then reads len and the button/analog words from the buffer, i.e. exactly cellPadGetData.
+error_code sys_io_13ED2BA4(u32 port_no, vm::ptr<CellPadData> data)
+{
+	cellPad.trace("sys_io_13ED2BA4(port_no=%d, data=*0x%x)", port_no, data);
+	return cellPadGetData(port_no, data);
+}
+
 void cellPad_init()
 {
 	REG_FUNC(sys_io, cellPadInit);
@@ -1407,4 +1416,5 @@ void cellPad_init()
 	REG_FUNC(sys_io, cellPadFilterIIRFilter);
 
 	REG_FNID(sys_io, 0x3733EA3C, sys_io_3733EA3C);
+	REG_FNID(sys_io, 0x13ED2BA4, sys_io_13ED2BA4);
 }
