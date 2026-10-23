@@ -1213,6 +1213,14 @@ error_code sys_rsx_device_map(cpu_thread& cpu, vm::ptr<u64> dev_addr, vm::ptr<u6
 
 	if (dev_id != 8)
 	{
+		if (Emu.IsVsh())
+		{
+			// VSH 0.92's libgcm maps RSX device 3 before device 8 and copes with the call failing (it only loads the result when the
+			// syscall returned 0). RPCS3 knows no such device, so fail the call instead of terminating the thread.
+			sys_rsx.warning("sys_rsx_device_map(): unsupported dev_id %d, returning CELL_EINVAL", dev_id);
+			return CELL_EINVAL;
+		}
+
 		// TODO: lv1 related
 		fmt::throw_exception("sys_rsx_device_map: Invalid dev_id %d", dev_id);
 	}
