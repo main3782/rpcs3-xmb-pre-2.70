@@ -3963,6 +3963,15 @@ error_code sys_fs_mount(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char>
 	if (vfs_path.empty())
 		return {CELL_ENOTSUP, device_name};
 
+	if (Emu.IsVsh() && path_sv == "/dev_hdd0"sv && !vfs::get(path_sv).empty())
+	{
+		// VSH 0.9x mounts the HDD itself after its filesystem check ("mounting HDD in the mount point "/dev_hdd0""), but from firmware 1.00
+		// on lv2 has /dev_hdd0 mounted at boot. RPCS3 does too, so this used to fail with CELL_EEXIST, which made VSH skip its post-mount
+		// setup (the /dev_hdd0/mms/db media databases then fail to open: "Error 0x8003041a to open database"). It is mounted already, so succeed.
+		sys_fs.warning("sys_fs_mount(): VSH mount of /dev_hdd0 (%s, %s) skipped, already mounted", device_name, filesystem);
+		return CELL_OK;
+	}
+
 	if (root_name.empty() || !vfs::get(path_sv).empty())
 		return {CELL_EEXIST, path_sv};
 
