@@ -300,6 +300,19 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 
 			const u32 op = *ensure(m_info.get_ptr<u32>(::narrow<u32>(m_addr + base)));
 
+			if (m_rel && m_rel->type == 1u)
+			{
+				// R_PPC64_ADDR32: a relocated 32-bit pointer, i.e. data embedded in the code stream (jump table or literal pool), not an
+				// instruction. Old firmware modules (e.g. VSH 0.91's libfs.sprx, libfs_utility.sprx, sdk.sprx) contain these. No instruction
+				// translator ever consumes this kind of relocation, so it used to make the whole module part fail to translate, which
+				// paused the emulation ("Press and hold the START button to resume") once per affected module.
+				// Translate the word as an invalid instruction (it is never executed) and drop the relocation. Each translated unit is a
+				// single basic block, so ending it here is correct; any code after the data is its own block.
+				m_rel = nullptr;
+				UNK({op});
+				continue;
+			}
+
 			(this->*(s_ppu_decoder.decode(op)))({op});
 
 			if (m_rel)
