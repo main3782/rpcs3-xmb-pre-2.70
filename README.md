@@ -1,7 +1,7 @@
 RPCS3 - XMB mods to get pre-2.70 to work
 =====
 <p align="center">
-  <img src="screenshots/0.94-About.png" width="600" height="400" />
+  <img src="screenshots/0.91-Home.png" width="600" height="400" />
 </p>
 
 These are a handful of patches that get XMB to work before version 2.70 on RPCS3. So far, versions 0.94 and above work!
