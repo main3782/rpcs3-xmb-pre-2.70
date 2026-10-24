@@ -4,7 +4,7 @@ RPCS3 - XMB mods to get pre-2.70 to work
   <img src="screenshots/0.91-Home.png" width="600" height="400" />
 </p>
 
-These are a handful of patches that get XMB to work before version 2.70 on RPCS3. So far, versions 0.94 and above work!
+These are a handful of patches that get XMB to work before version 2.70 on RPCS3. So far, versions 0.91 and above work!
 
 As if you can imagine, yes this is vibecoded, with Claude Sonnet 5/5.5. I don't know how it even works. I merely just wanted a way to run these XMB versions without having to have unreliable PS3 hardware (you need a 90nm RSX for these old firmwares...)
 
