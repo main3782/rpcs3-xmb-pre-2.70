@@ -392,7 +392,19 @@ public:
 				highest_offset = std::max<usz>(highest_offset, seek_pos);
 
 				if (!stream.read(shdrs.back().bin, shdr.sh_size, true, seek_pos))
+				{
+					// Early firmware SELFs (e.g. 0.90) keep the section header table of the original unstripped ELF,
+					// but only the program header data is stored in the SELF. Non-allocated sections such as
+					// .symtab/.strtab then point past the end of the decrypted file. They are not needed to run
+					// the module, so drop their data instead of failing the whole load.
+					if (!shdr.sh_flags().all_of(sh_flag::shf_alloc))
+					{
+						shdrs.back().bin.clear();
+						continue;
+					}
+
 					return set_error(elf_error::stream_data);
+				}
 			}
 		}
 
