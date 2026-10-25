@@ -10,6 +10,9 @@
 
 LOG_CHANNEL(sysPrxForUser);
 
+// Diagnostic (0.90 VSH bring-up), defined in the thread dump code
+std::string dump_useful_thread_info();
+
 error_code sys_lwmutex_create(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, vm::ptr<sys_lwmutex_attribute_t> attr)
 {
 	sysPrxForUser.trace("sys_lwmutex_create(lwmutex=*0x%x, attr=*0x%x)", lwmutex, attr);
@@ -126,6 +129,17 @@ error_code sys_lwmutex_lock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, u64
 		if ((lwmutex->attribute & SYS_SYNC_RECURSIVE) == 0u)
 		{
 			// if not recursive
+
+			// Diagnostic: report the first few occurrences with a call stack
+			static atomic_t<u32> s_deadlk_reports{0};
+
+			if (s_deadlk_reports++ < 4u)
+			{
+				sysPrxForUser.error("sys_lwmutex_lock(): EDEADLK lwmutex=*0x%x, owner=0x%x, attribute=0x%x, recursive_count=0x%x, sleep_queue=0x%x, ppu_id=0x%x, LR=0x%llx\n%s",
+					lwmutex, static_cast<u32>(old_owner), static_cast<u32>(lwmutex->attribute), static_cast<u32>(lwmutex->recursive_count),
+					static_cast<u32>(lwmutex->sleep_queue), ppu.id, ppu.lr, dump_useful_thread_info());
+			}
+
 			return CELL_EDEADLK;
 		}
 
