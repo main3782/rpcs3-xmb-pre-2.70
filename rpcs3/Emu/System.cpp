@@ -2825,7 +2825,9 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			return game_boot_result::invalid_file_or_folder;
 		}
 
-		if (ppu_exec == elf_error::ok && !fs::is_file(g_cfg_vfs.get_dev_flash() + "sys/external/liblv2.sprx"))
+		// Early firmware (e.g. 0.85) ships no liblv2.sprx in sys/external, so do not demand it when booting VSH itself:
+		// the modules it lacks are provided by the HLE implementations.
+		if (ppu_exec == elf_error::ok && !m_path.ends_with("vsh.self"sv) && !fs::is_file(g_cfg_vfs.get_dev_flash() + "sys/external/liblv2.sprx"))
 		{
 			const auto& libs = g_cfg.core.libraries_control.get_set();
 
