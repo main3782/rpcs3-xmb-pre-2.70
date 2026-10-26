@@ -1135,6 +1135,29 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		// NOTE: Realhw resets 16 bytes of this semaphore for some reason
 		vm::_ptr<atomic_t<u128>>(render->label_addr + 0x10)->store(u128{});
 
+		if (Emu.IsVsh())
+		{
+			// VSH diag (black screen on 0.90): report which buffer VSH flips and whether anything was drawn
+			static atomic_t<u32> s_flip_diag{0};
+			const u32 diag_n = s_flip_diag++;
+
+			if (diag_n < 3u || diag_n % 300u == 0u)
+			{
+				const u32 buf = static_cast<u32>(a3);
+				const bool buf_ok = buf < std::size(render->display_buffers);
+				const auto& frame_stats = render->get_stats();
+
+				sys_rsx.warning("VSH diag: flip #%u buffer=%u display_buffers_count=%u offset=0x%x pitch=0x%x size=%ux%u flip_index=%u vblank_count=%u draw_calls=%u submit_count=%u",
+					diag_n, buf, render->display_buffers_count,
+					buf_ok ? static_cast<u32>(render->display_buffers[buf].offset) : 0u,
+					buf_ok ? static_cast<u32>(render->display_buffers[buf].pitch) : 0u,
+					buf_ok ? static_cast<u32>(render->display_buffers[buf].width) : 0u,
+					buf_ok ? static_cast<u32>(render->display_buffers[buf].height) : 0u,
+					static_cast<u32>(render->int_flip_index), static_cast<u32>(render->vblank_count.load()),
+					frame_stats.draw_calls, frame_stats.submit_count);
+			}
+		}
+
 		render->send_event(0, SYS_RSX_EVENT_FLIP_BASE << 1, 0);
 		break;
 	}
