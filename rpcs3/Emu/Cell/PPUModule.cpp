@@ -1788,9 +1788,9 @@ static void ppu_apply_legacy_prx_relocs(const ppu_prx_object& elf, lv2_prx& prx,
 					{
 						absolute = true;
 					}
-					else if ((sym.st_info & 0xf) == 3 && shndx < elf.shdrs.size())
+					else if (shndx < elf.shdrs.size())
 					{
-						// STT_SECTION: the value is relative to the section
+						// The value of a symbol is relative to its section in these (relocatable style) modules
 						const u64 sec_addr = elf.shdrs[shndx].sh_addr;
 						sym_va += sec_addr;
 					}
@@ -1938,57 +1938,112 @@ static void ppu_apply_legacy_prx_relocs(const ppu_prx_object& elf, lv2_prx& prx,
 		}
 	}
 
-	if (!toc_relocs.empty())
+	// The TOC base is 0x8000 bytes past the start of the .toc section
+	s64 toc_va = 0;
+	u32 toc_loaded = 0;
+	bool toc_found = false;
+
+	for (const auto& sec : elf.shdrs)
 	{
-		// The TOC base is 0x8000 bytes past the start of the .toc section
-		s64 toc_va = 0;
-		bool toc_found = false;
-
-		for (const auto& sec : elf.shdrs)
+		if (sec.sh_type == sec_type::sht_progbits && section_name(sec) == ".toc")
 		{
-			if (sec.sh_type == sec_type::sht_progbits && section_name(sec) == ".toc")
+			const u64 sec_addr = sec.sh_addr;
+			const u32 sec_loaded = map_va(sec_addr);
+
+			if (sec_loaded != umax)
 			{
-				const u64 sec_addr = sec.sh_addr;
 				toc_va = static_cast<s64>(sec_addr) + 0x8000;
+				toc_loaded = sec_loaded + 0x8000;
 				toc_found = true;
-				break;
-			}
-		}
-
-		if (!toc_found)
-		{
-			toc_va = toc_relocs[0].target_va;
-
-			for (const auto& r : toc_relocs)
-			{
-				toc_va = std::min(toc_va, r.target_va);
 			}
 
-			toc_va += 0x8000;
-			ppu_loader.warning("Legacy PRX relocations: .toc section not found, guessing TOC base 0x%llx", toc_va);
+			break;
 		}
+	}
 
-		ppu_loader.notice("Legacy PRX relocations: TOC base = 0x%llx (loaded at 0x%x)", toc_va, map_va(static_cast<u64>(toc_va)));
+	if (!toc_found && !toc_relocs.empty())
+	{
+		toc_va = toc_relocs[0].target_va;
 
 		for (const auto& r : toc_relocs)
 		{
-			if (ar)
+			toc_va = std::min(toc_va, r.target_va);
+		}
+
+		toc_va += 0x8000;
+		toc_loaded = map_va(static_cast<u64>(toc_va - 0x8000)) + 0x8000;
+		ppu_loader.warning("Legacy PRX relocations: .toc section not found, guessing TOC base 0x%llx", toc_va);
+	}
+
+	ppu_loader.notice("Legacy PRX relocations: TOC base = 0x%llx (loaded at 0x%x)", toc_va, toc_loaded);
+
+	for (const auto& r : toc_relocs)
+	{
+		if (ar)
+		{
+			continue;
+		}
+
+		const u32 value = static_cast<u32>(r.target_va - toc_va);
+
+		if (r.type == 47) // R_PPC64_TOC16
+		{
+			*ensure(prx.get_ptr<u16>(r.addr)) = static_cast<u16>(value);
+		}
+		else // R_PPC64_TOC16_DS
+		{
+			*ensure(prx.get_ptr<ppu_bf_t<be_t<u16>, 0, 14>>(r.addr)) = static_cast<u16>(value) >> 2;
+		}
+
+		applied++;
+	}
+
+	// The function descriptors of these modules have no TOC pointer, the loader of that era filled it in
+	if (toc_loaded && !ar)
+	{
+		for (const auto& sec : elf.shdrs)
+		{
+			if (sec.sh_type != sec_type::sht_progbits)
 			{
 				continue;
 			}
 
-			const u32 value = static_cast<u32>(r.target_va - toc_va);
+			const std::string_view name = section_name(sec);
+			const u64 sec_addr = sec.sh_addr;
+			const u64 sec_size = sec.sh_size;
 
-			if (r.type == 47) // R_PPC64_TOC16
+			if (name == ".opd")
 			{
-				*ensure(prx.get_ptr<u16>(r.addr)) = static_cast<u16>(value);
-			}
-			else // R_PPC64_TOC16_DS
-			{
-				*ensure(prx.get_ptr<ppu_bf_t<be_t<u16>, 0, 14>>(r.addr)) = static_cast<u16>(value) >> 2;
-			}
+				for (u64 off = 0; off + 8 <= sec_size; off += 8)
+				{
+					const u32 raddr = map_va(sec_addr + off);
 
-			applied++;
+					if (raddr != umax)
+					{
+						auto* toc_ptr = ensure(prx.get_ptr<u32>(raddr + 4));
+
+						if (!*toc_ptr)
+						{
+							*toc_ptr = toc_loaded;
+						}
+					}
+				}
+			}
+			else if (name == ".rodata.sceModuleInfo" && sec_size >= 0x34)
+			{
+				// Library info: the TOC pointer follows the 28 byte name
+				const u32 raddr = map_va(sec_addr + 0x20);
+
+				if (raddr != umax)
+				{
+					auto* toc_ptr = ensure(prx.get_ptr<u32>(raddr));
+
+					if (!*toc_ptr)
+					{
+						*toc_ptr = toc_loaded;
+					}
+				}
+			}
 		}
 	}
 
