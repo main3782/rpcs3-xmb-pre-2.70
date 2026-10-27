@@ -1595,6 +1595,406 @@ const char* get_prx_name_by_cia(u32 addr)
 	return nullptr;
 }
 
+// Early SDK PRX modules (e.g. firmware 0.85) store their relocations as plain ELF RELA sections that reference a symbol table
+// (kept in the 0x700000a8 segment) instead of the compact SCE_PPURELA format used later. Detect them.
+static bool ppu_prx_has_legacy_relocs(const ppu_prx_object& elf)
+{
+	bool has_symtab = false;
+	bool has_rela = false;
+
+	for (const auto& sec : elf.shdrs)
+	{
+		has_symtab |= sec.sh_type == sec_type::sht_symtab && !sec.get_bin().empty();
+		has_rela |= sec.sh_type == sec_type::sht_rela && !sec.get_bin().empty();
+	}
+
+	if (!has_symtab || !has_rela)
+	{
+		return false;
+	}
+
+	for (const auto& prog : elf.progs)
+	{
+		if (prog.p_type == 0x700000a4 && prog.bin.size() >= 24)
+		{
+			// The compact format has 0x8000 in the second field of each entry
+			be_t<u16> flag{};
+			std::memcpy(&flag, prog.bin.data() + 8, sizeof(flag));
+			return static_cast<u16>(flag) != u16{0x8000};
+		}
+	}
+
+	return false;
+}
+
+static void ppu_apply_legacy_prx_relocs(const ppu_prx_object& elf, lv2_prx& prx, bool ar)
+{
+	struct legacy_rela
+	{
+		be_t<u64> r_offset;
+		be_t<u64> r_info;
+		be_t<s64> r_addend;
+	};
+
+	struct legacy_sym
+	{
+		be_t<u32> st_name;
+		u8 st_info;
+		u8 st_other;
+		be_t<u16> st_shndx;
+		be_t<u64> st_value;
+		be_t<u64> st_size;
+	};
+
+	static_assert(sizeof(legacy_rela) == 24 && sizeof(legacy_sym) == 24);
+
+	// Find the symbol table
+	std::span<const uchar> symtab;
+
+	for (const auto& sec : elf.shdrs)
+	{
+		if (sec.sh_type == sec_type::sht_symtab)
+		{
+			symtab = sec.get_bin();
+			break;
+		}
+	}
+
+	// Link-time virtual address -> loaded address (umax if it is not inside any LOAD segment)
+	const auto map_va = [&](u64 va) -> u32
+	{
+		usz seg_index = 0;
+
+		for (const auto& prog : elf.progs)
+		{
+			if (prog.p_type != 0x1)
+			{
+				continue;
+			}
+
+			if (seg_index >= prx.segs.size())
+			{
+				break;
+			}
+
+			const auto& seg = prx.segs[seg_index++];
+			const u64 seg_va = prog.p_vaddr;
+			const u64 seg_size = prog.p_memsz;
+
+			if (seg.size && va >= seg_va && va < seg_va + seg_size)
+			{
+				return static_cast<u32>(seg.addr + (va - seg_va));
+			}
+		}
+
+		return umax;
+	};
+
+	const auto section_name = [&](const auto& sec) -> std::string_view
+	{
+		const usz shstrndx = elf.header.e_shstrndx;
+
+		if (shstrndx >= elf.shdrs.size())
+		{
+			return {};
+		}
+
+		const auto names = elf.shdrs[shstrndx].get_bin();
+		const usz name_off = sec.sh_name;
+
+		if (name_off >= names.size())
+		{
+			return {};
+		}
+
+		const char* str = reinterpret_cast<const char*>(names.data()) + name_off;
+		return std::string_view(str, strnlen(str, names.size() - name_off));
+	};
+
+	struct toc_reloc_t
+	{
+		u32 addr;
+		u32 type;
+		s64 target_va;
+	};
+
+	std::vector<toc_reloc_t> toc_relocs;
+	usz applied = 0;
+	usz skipped = 0;
+
+	for (const auto& rs : elf.shdrs)
+	{
+		if (rs.sh_type != sec_type::sht_rela)
+		{
+			continue;
+		}
+
+		const auto data = rs.get_bin();
+		const u64 rs_size = rs.sh_size;
+		const usz rs_info = rs.sh_info;
+
+		// Relocations of debug sections have their data stripped from the SELF
+		if (!rs_size || data.size() < rs_size || rs_info >= elf.shdrs.size())
+		{
+			continue;
+		}
+
+		const auto& target = elf.shdrs[rs_info];
+
+		if (!target.sh_flags().all_of(sh_flag::shf_alloc))
+		{
+			continue;
+		}
+
+		const u64 target_addr = target.sh_addr;
+
+		for (usz off = 0; off + sizeof(legacy_rela) <= rs_size; off += sizeof(legacy_rela))
+		{
+			const auto& rel = reinterpret_cast<const legacy_rela&>(data[off]);
+			const u64 info = rel.r_info;
+			const u64 rel_offset = rel.r_offset;
+			const s64 addend = rel.r_addend;
+			const u32 sym_index = static_cast<u32>(info >> 32);
+			const u32 type = static_cast<u32>(info);
+
+			if (type == 107)
+			{
+				// Scheduling hint, nothing to patch
+				continue;
+			}
+
+			u64 sym_va = 0;
+			bool undefined = true;
+			bool absolute = false;
+
+			if (sym_index)
+			{
+				if ((usz{sym_index} + 1) * sizeof(legacy_sym) > symtab.size())
+				{
+					ppu_loader.error("Legacy PRX relocation: symbol index out of range (sym=%u)", sym_index);
+					skipped++;
+					continue;
+				}
+
+				const auto& sym = reinterpret_cast<const legacy_sym&>(symtab[usz{sym_index} * sizeof(legacy_sym)]);
+				const u16 shndx = sym.st_shndx;
+
+				if (shndx != 0)
+				{
+					undefined = false;
+					sym_va = sym.st_value;
+
+					if (shndx >= 0xff00)
+					{
+						absolute = true;
+					}
+					else if ((sym.st_info & 0xf) == 3 && shndx < elf.shdrs.size())
+					{
+						// STT_SECTION: the value is relative to the section
+						const u64 sec_addr = elf.shdrs[shndx].sh_addr;
+						sym_va += sec_addr;
+					}
+				}
+			}
+
+			const u32 raddr = map_va(target_addr + rel_offset);
+
+			if (raddr == umax)
+			{
+				ppu_loader.error("Legacy PRX relocation: patch address is outside of the segments (va=0x%llx, type=%u)", target_addr + rel_offset, type);
+				skipped++;
+				continue;
+			}
+
+			u64 rdata = 0;
+
+			if (sym_index && undefined)
+			{
+				// Undefined (weak) symbol resolves to zero
+				if (type != 1)
+				{
+					continue;
+				}
+
+				rdata = static_cast<u64>(addend);
+			}
+			else if (absolute)
+			{
+				rdata = sym_va + static_cast<u64>(addend);
+			}
+			else
+			{
+				const u32 sloaded = sym_index ? map_va(sym_va) : u32{0};
+
+				if (sloaded == umax)
+				{
+					ppu_loader.error("Legacy PRX relocation: symbol address is outside of the segments (sym=%u, va=0x%llx, type=%u)", sym_index, sym_va, type);
+					skipped++;
+					continue;
+				}
+
+				rdata = static_cast<u64>(static_cast<s64>(sloaded) + addend);
+			}
+
+			if (type == 47 || type == 63)
+			{
+				// TOC-relative, needs the TOC base which is known only after all sections were seen
+				toc_relocs.push_back({raddr, type, static_cast<s64>(sym_va) + addend});
+				continue;
+			}
+
+			switch (type)
+			{
+			case 1:
+			case 4:
+			case 5:
+			case 6:
+			case 10:
+			case 11:
+			case 38:
+			case 44:
+			case 57:
+			{
+				ppu_reloc _rel;
+				_rel.addr = raddr;
+				_rel.type = type;
+				_rel.data = rdata;
+				prx.relocs.emplace_back(_rel);
+				break;
+			}
+			default: break;
+			}
+
+			if (ar)
+			{
+				continue;
+			}
+
+			switch (type)
+			{
+			case 1: // R_PPC64_ADDR32
+			{
+				*ensure(prx.get_ptr<u32>(raddr)) = static_cast<u32>(rdata);
+				break;
+			}
+
+			case 4: // R_PPC64_ADDR16_LO
+			{
+				*ensure(prx.get_ptr<u16>(raddr)) = static_cast<u16>(rdata);
+				break;
+			}
+
+			case 5: // R_PPC64_ADDR16_HI
+			{
+				*ensure(prx.get_ptr<u16>(raddr)) = static_cast<u16>(rdata >> 16);
+				break;
+			}
+
+			case 6: // R_PPC64_ADDR16_HA
+			{
+				*ensure(prx.get_ptr<u16>(raddr)) = static_cast<u16>(rdata >> 16) + (rdata & 0x8000 ? 1 : 0);
+				break;
+			}
+
+			case 10: // R_PPC64_REL24
+			{
+				*ensure(prx.get_ptr<ppu_bf_t<be_t<u32>, 6, 24>>(raddr)) = static_cast<u32>(rdata - raddr) >> 2;
+				break;
+			}
+
+			case 11: // R_PPC64_REL14
+			{
+				*ensure(prx.get_ptr<ppu_bf_t<be_t<u32>, 16, 14>>(raddr)) = static_cast<u32>(rdata - raddr) >> 2;
+				break;
+			}
+
+			case 38: // R_PPC64_ADDR64
+			{
+				*ensure(prx.get_ptr<u64>(raddr)) = rdata;
+				break;
+			}
+
+			case 44: // R_PPC64_REL64
+			{
+				*ensure(prx.get_ptr<u64>(raddr)) = rdata - raddr;
+				break;
+			}
+
+			case 57: // R_PPC64_ADDR16_LO_DS
+			{
+				*ensure(prx.get_ptr<ppu_bf_t<be_t<u16>, 0, 14>>(raddr)) = static_cast<u16>(rdata) >> 2;
+				break;
+			}
+
+			default:
+			{
+				ppu_loader.error("Legacy PRX relocation(%u): Illegal/Unknown type! (addr=0x%x; 0x%llx)", type, raddr, rdata);
+				skipped++;
+				continue;
+			}
+			}
+
+			applied++;
+		}
+	}
+
+	if (!toc_relocs.empty())
+	{
+		// The TOC base is 0x8000 bytes past the start of the .toc section
+		s64 toc_va = 0;
+		bool toc_found = false;
+
+		for (const auto& sec : elf.shdrs)
+		{
+			if (sec.sh_type == sec_type::sht_progbits && section_name(sec) == ".toc")
+			{
+				const u64 sec_addr = sec.sh_addr;
+				toc_va = static_cast<s64>(sec_addr) + 0x8000;
+				toc_found = true;
+				break;
+			}
+		}
+
+		if (!toc_found)
+		{
+			toc_va = toc_relocs[0].target_va;
+
+			for (const auto& r : toc_relocs)
+			{
+				toc_va = std::min(toc_va, r.target_va);
+			}
+
+			toc_va += 0x8000;
+			ppu_loader.warning("Legacy PRX relocations: .toc section not found, guessing TOC base 0x%llx", toc_va);
+		}
+
+		ppu_loader.notice("Legacy PRX relocations: TOC base = 0x%llx (loaded at 0x%x)", toc_va, map_va(static_cast<u64>(toc_va)));
+
+		for (const auto& r : toc_relocs)
+		{
+			if (ar)
+			{
+				continue;
+			}
+
+			const u32 value = static_cast<u32>(r.target_va - toc_va);
+
+			if (r.type == 47) // R_PPC64_TOC16
+			{
+				*ensure(prx.get_ptr<u16>(r.addr)) = static_cast<u16>(value);
+			}
+			else // R_PPC64_TOC16_DS
+			{
+				*ensure(prx.get_ptr<ppu_bf_t<be_t<u16>, 0, 14>>(r.addr)) = static_cast<u16>(value) >> 2;
+			}
+
+			applied++;
+		}
+	}
+
+	ppu_loader.warning("Legacy PRX relocations: %u applied, %u skipped", applied, skipped);
+}
+
 shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, const std::string& path, s64 file_offset, utils::serial* ar)
 {
 	if (elf != elf_error::ok)
@@ -1699,6 +2099,8 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 		}
 
 		case 0x700000a4: break; // Relocations
+		case 0x7: break; // TLS (not used by PRX modules)
+		case 0x700000a8: break; // Symbol table of early SDK modules (see ppu_apply_legacy_prx_relocs)
 
 		default: ppu_loader.error("Unknown segment type! 0x%08x", p_type);
 		}
@@ -1739,6 +2141,8 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 		}
 	}
 
+	const bool legacy_relocs = ppu_prx_has_legacy_relocs(elf);
+
 	// Do relocations
 	for (auto& prog : elf.progs)
 	{
@@ -1746,6 +2150,12 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 		{
 		case 0x700000a4:
 		{
+			if (legacy_relocs)
+			{
+				// Handled below
+				break;
+			}
+
 			// Relocation information of the SCE_PPURELA segment
 			struct ppu_prx_relocation_info
 			{
@@ -1862,6 +2272,11 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 		}
 		default : break;
 		}
+	}
+
+	if (legacy_relocs)
+	{
+		ppu_apply_legacy_prx_relocs(elf, *prx, ar != nullptr);
 	}
 
 	std::vector<u32> exported_funcs;
