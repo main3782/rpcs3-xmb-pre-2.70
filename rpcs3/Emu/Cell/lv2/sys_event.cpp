@@ -125,6 +125,9 @@ extern void resume_spu_thread_group_from_waiting(spu_thread& spu, std::array<sha
 // Diagnostic (2.17 VSH bring-up): IPC key of the audio server queue that VSH talks to
 static constexpr u64 s_vsh_audio_ipc_key = 0x8000cafe0246fab4;
 
+// Firmware 0.85 (and presumably older) reaches the audio server through a different, much simpler key
+static constexpr u64 s_vsh_audio_ipc_key_legacy = 0x12340098;
+
 // Diagnostic: describe where in guest code the current PPU thread is (LR + a few saved return addresses)
 static std::string event_caller_trace()
 {
@@ -766,7 +769,7 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 	// and vshmw polls it forever ("waiting for audio server process ready") until it exists.
 	// We can't spawn that process, so provide an empty placeholder queue to get VSH past the wait.
 	// Must be done before taking id_manager::g_mutex (lv2_obj::create locks it internally).
-	if (!queue && ipc_key == 0x8000cafe0246fab4 && Emu.IsVsh())
+	if (!queue && (ipc_key == s_vsh_audio_ipc_key || ipc_key == s_vsh_audio_ipc_key_legacy) && Emu.IsVsh())
 	{
 		sys_event.todo("sys_event_port_connect_ipc(): creating placeholder queue for the audio server (ipc_key=0x%llx)", ipc_key);
 
@@ -963,6 +966,17 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 				// Fake audio server answers instead of enqueueing into the placeholder queue
 				vsh_audio_server_request(data1, data2, data3);
 				return {};
+			}
+
+			if (port.queue->key == s_vsh_audio_ipc_key_legacy && Emu.IsVsh())
+			{
+				// Diagnostic: the 0.85 audio protocol is unknown, log what VSH sends (the request stays queued, nobody answers yet)
+				static atomic_t<u32> s_legacy_audio_log_count{0};
+
+				if (s_legacy_audio_log_count++ < 200u)
+				{
+					sys_event.warning("AUDIO-SRV (legacy key) request: eport=0x%x, d1=0x%llx, d2=0x%llx, d3=0x%llx %s", eport_id, data1, data2, data3, event_caller_trace());
+				}
 			}
 
 			const u64 source = port.name ? port.name : (u64{process_getpid() + 0u} << 32) | u64{eport_id};
