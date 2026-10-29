@@ -159,6 +159,32 @@ namespace rsx
 				u32 bytes_read = 0;
 
 				u32 fifo_code_path = m_next_cmd_entry;
+
+				if (!(m_next_cmd_entry >= m_fifo_pos && m_next_cmd_entry < m_fifo_pos + 8192))
+				{
+					// Diagnostic (0.85 VSH bring-up): dump the raw FIFO words around the broken state before the check aborts the thread
+					rsx_log.error("FIFO diag: broken fetch state (addr=0x%x, put=0x%x, get=0x%x, next_cmd_entry=0x%x, fifo_pos=0x%x, cache_addr=0x%x, cache_size=0x%x)",
+						addr, put, m_ctrl->get.load(), m_next_cmd_entry, m_fifo_pos, m_cache_addr, m_cache_size);
+
+					const u32 regions[2] = { m_fifo_pos > 0x60 ? (m_fifo_pos & ~0x1fu) - 0x40 : 0u, 0xc40u };
+
+					for (const u32 region_start : regions)
+					{
+						for (u32 base = region_start; base < region_start + 0xc0; base += 0x20)
+						{
+							u32 words[8]{};
+
+							for (u32 i = 0; i < 8; i++)
+							{
+								const u32 ea = m_iotable->get_addr(base + i * 4);
+								words[i] = ea == umax ? 0xdeadbeefu : static_cast<u32>(vm::read32(ea));
+							}
+
+							rsx_log.error("FIFO diag: [%08x] %08x %08x %08x %08x %08x %08x %08x %08x", base, words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]);
+						}
+					}
+				}
+
 				ensure(m_next_cmd_entry >= m_fifo_pos && m_next_cmd_entry < m_fifo_pos + 8192);
 
 				// Find the next set bit after every iteration
