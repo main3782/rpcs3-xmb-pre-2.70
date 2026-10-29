@@ -166,11 +166,11 @@ namespace rsx
 					rsx_log.error("FIFO diag: broken fetch state (addr=0x%x, put=0x%x, get=0x%x, next_cmd_entry=0x%x, fifo_pos=0x%x, cache_addr=0x%x, cache_size=0x%x)",
 						addr, put, m_ctrl->get.load(), m_next_cmd_entry, m_fifo_pos, m_cache_addr, m_cache_size);
 
-					const u32 regions[2] = { m_fifo_pos > 0x60 ? (m_fifo_pos & ~0x1fu) - 0x40 : 0u, 0xc40u };
+					const u32 regions[2][2] = { { m_fifo_pos > 0x60 ? (m_fifo_pos & ~0x1fu) - 0x40 : 0u, 0xc0u }, { 0u, 0xd00u } };
 
-					for (const u32 region_start : regions)
+					for (const auto& region : regions)
 					{
-						for (u32 base = region_start; base < region_start + 0xc0; base += 0x20)
+						for (u32 base = region[0]; base < region[0] + region[1]; base += 0x20)
 						{
 							u32 words[8]{};
 

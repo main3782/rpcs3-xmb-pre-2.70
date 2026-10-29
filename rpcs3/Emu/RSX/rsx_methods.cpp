@@ -1739,6 +1739,20 @@ namespace rsx
 		// FIFO
 		bind(FIFO::FIFO_DRAW_BARRIER >> 2, fifo::draw_barrier);
 
+		// Early firmware (e.g. 0.85) binds more objects to the sub-channels in its default FIFO context than later firmware does.
+		// Accept the binding methods (SET_OBJECT, SET_CONTEXT_DMA_NOTIFIES and the DMA buffer contexts) of every sub-channel
+		// where nothing else registered them, instead of treating the whole buffer as a broken FIFO.
+		for (const u32 subchannel_base : {0x0u, 0x800u, 0x1000u, 0x1800u, 0x2000u, 0x2800u, 0x3000u, 0x3800u})
+		{
+			for (const u32 offset : {0x0u, 0x60u, 0x61u, 0x62u})
+			{
+				if (methods[subchannel_base + offset] == &invalid_method)
+				{
+					methods[subchannel_base + offset] = nullptr;
+				}
+			}
+		}
+
 		// REGS(ctx)->init();
 		method_registers.init();
 
