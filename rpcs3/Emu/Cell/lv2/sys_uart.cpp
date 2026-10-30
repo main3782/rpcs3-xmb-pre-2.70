@@ -2063,6 +2063,9 @@ void vuart_av_thread::parse_tx_buffer(u32 buf_size)
 		// layout difference shows up as an "Invalid size for cid" error instead of being silently misparsed).
 		if (hdr->version == 0x204)
 		{
+			// Reply with 0x204 from the very first packet on (AV_INIT, which also sets this, is not the first command of a batch)
+			av_cmd_ver = 0x204;
+
 			static bool s_legacy_av_logged = false;
 
 			if (!s_legacy_av_logged)
