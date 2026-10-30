@@ -15,6 +15,9 @@
 
 #include "util/asm.hpp"
 
+#include <mutex>
+#include <set>
+
 LOG_CHANNEL(sys_event);
 
 lv2_event_queue::lv2_event_queue(u32 protocol, s32 type, s32 size, u64 name, u64 ipc_key) noexcept
@@ -161,6 +164,40 @@ static std::string event_caller_trace()
 
 	out += "]";
 	return out;
+}
+
+// Diagnostic (0.85 black screen): name of the current guest thread
+static std::string event_diag_thread_name()
+{
+	const auto ppu = cpu_thread::get_current<ppu_thread>();
+
+	if (ppu)
+	{
+		if (const auto name = ppu->ppu_tname.load())
+		{
+			return *name;
+		}
+	}
+
+	return "?";
+}
+
+// Diagnostic (0.85 black screen): log the first receive of every (thread, queue) pair
+static void event_diag_receive(u32 equeue_id, u64 timeout)
+{
+	static std::mutex s_mutex;
+	static std::set<std::pair<std::string, u32>> s_seen;
+
+	const std::string name = event_diag_thread_name();
+
+	std::lock_guard lock(s_mutex);
+
+	if (s_seen.size() >= 200u || !s_seen.emplace(name, equeue_id).second)
+	{
+		return;
+	}
+
+	sys_event.warning("VSH diag: queue_receive thread='%s' equeue_id=0x%x timeout=0x%llx: %s", name, equeue_id, timeout, event_caller_trace());
 }
 
 CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_event_port* port)
@@ -310,7 +347,19 @@ error_code sys_event_queue_create(cpu_thread& cpu, vm::ptr<u32> equeue_id, vm::p
 	}
 
 	cpu.check_state();
-	*equeue_id = idm::last_id<lv2_event_queue>();
+	const u32 new_queue_id = idm::last_id<lv2_event_queue>();
+	*equeue_id = new_queue_id;
+
+	if (Emu.IsVsh())
+	{
+		static atomic_t<u32> s_create_count = 0;
+
+		if (s_create_count++ < 200u)
+		{
+			sys_event.warning("VSH diag: queue created equeue_id=0x%x ipc_key=0x%llx name=0x%llx size=%d type=%u by '%s': %s", new_queue_id, ipc_key, name, size, type, event_diag_thread_name(), event_caller_trace());
+		}
+	}
+
 	return CELL_OK;
 }
 
@@ -517,6 +566,11 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 	ppu.state += cpu_flag::wait;
 
 	sys_event.trace("sys_event_queue_receive(equeue_id=0x%x, *0x%x, timeout=0x%llx)", equeue_id, dummy_event, timeout);
+
+	if (Emu.IsVsh())
+	{
+		event_diag_receive(equeue_id, timeout);
+	}
 
 	ppu.gpr[3] = CELL_OK;
 
@@ -947,6 +1001,16 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 	}
 
 	sys_event.trace("sys_event_port_send(eport_id=0x%x, data1=0x%llx, data2=0x%llx, data3=0x%llx)", eport_id, data1, data2, data3);
+
+	if (Emu.IsVsh())
+	{
+		static atomic_t<u32> s_send_count = 0;
+
+		if (s_send_count++ < 250u)
+		{
+			sys_event.warning("VSH diag: port_send eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx by '%s': %s", eport_id, data1, data2, data3, event_diag_thread_name(), event_caller_trace());
+		}
+	}
 
 	bool notified_thread = false;
 
