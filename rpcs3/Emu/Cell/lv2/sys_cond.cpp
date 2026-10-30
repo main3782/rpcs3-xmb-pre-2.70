@@ -15,6 +15,11 @@
 
 LOG_CHANNEL(sys_cond);
 
+// Diagnostic (0.85 black screen): which cond does ScePafThread block on, and who signals it
+static std::string cond_caller_trace(ppu_thread& ppu);
+static void cond_watch_signal(ppu_thread& ppu, u32 cond_id, const char* what);
+static atomic_t<u32> s_pafthread_cond{0};
+
 lv2_cond::lv2_cond(utils::serial& ar) noexcept
 	: key(ar)
 	, name(ar)
@@ -164,6 +169,8 @@ error_code sys_cond_signal(ppu_thread& ppu, u32 cond_id)
 
 	sys_cond.trace("sys_cond_signal(cond_id=0x%x)", cond_id);
 
+	cond_watch_signal(ppu, cond_id, "sys_cond_signal");
+
 	while (true)
 	{
 		if (ppu.test_stopped())
@@ -235,6 +242,8 @@ error_code sys_cond_signal_all(ppu_thread& ppu, u32 cond_id)
 	ppu.state += cpu_flag::wait;
 
 	sys_cond.trace("sys_cond_signal_all(cond_id=0x%x)", cond_id);
+
+	cond_watch_signal(ppu, cond_id, "sys_cond_signal_all");
 
 	while (true)
 	{
@@ -317,6 +326,8 @@ error_code sys_cond_signal_to(ppu_thread& ppu, u32 cond_id, u32 thread_id)
 	ppu.state += cpu_flag::wait;
 
 	sys_cond.trace("sys_cond_signal_to(cond_id=0x%x, thread_id=0x%x)", cond_id, thread_id);
+
+	cond_watch_signal(ppu, cond_id, "sys_cond_signal_to");
 
 	const u64 start_time = get_system_time();
 	bool has_lower_prio_or_is_the_mutex_owner = false;
@@ -456,6 +467,22 @@ static std::string cond_caller_trace(ppu_thread& ppu)
 	return out;
 }
 
+static void cond_watch_signal(ppu_thread& ppu, u32 cond_id, const char* what)
+{
+	if (cond_id == 0u || cond_id != s_pafthread_cond.load())
+	{
+		return;
+	}
+
+	static atomic_t<u32> s_count = 0;
+
+	if (s_count++ < 60u)
+	{
+		const auto name = ppu.ppu_tname.load();
+		sys_cond.warning("VSH diag: %s(cond_id=0x%x) by '%s': %s", what, cond_id, name ? *name : std::string("?"), cond_caller_trace(ppu));
+	}
+}
+
 error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 {
 	ppu.state += cpu_flag::wait;
@@ -467,6 +494,16 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 		if (s_count++ < 4)
 		{
 			sys_cond.warning("hidportassign sys_cond_wait(cond_id=0x%x, timeout=%lld): %s", cond_id, timeout, cond_caller_trace(ppu));
+		}
+	}
+
+	if (const auto name = ppu.ppu_tname.load(); name && name->find("ScePafThread") != umax)
+	{
+		static atomic_t<u32> s_count = 0;
+
+		if (s_pafthread_cond.exchange(cond_id) != cond_id && s_count++ < 40u)
+		{
+			sys_cond.warning("VSH diag: ScePafThread sys_cond_wait(cond_id=0x%x, timeout=%lld): %s", cond_id, timeout, cond_caller_trace(ppu));
 		}
 	}
 
