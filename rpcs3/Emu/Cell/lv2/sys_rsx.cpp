@@ -171,6 +171,17 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 		else if (calls % 256 == 255)
 		{
 			sys_rsx.warning("rsx::thread::send_event(): sample: event_flags=0x%llx, guest handlers mask=0x%x, passes_filter=%d (call #%u)", event_flags, mask, (event_flags & mask) != 0, calls);
+
+			// Diagnostic (0.85 black screen): is the RSX processing commands at all?
+			if (Emu.IsVsh() && dma_address)
+			{
+				const auto& dma_ctrl = *vm::_ptr<RsxDmaControl>(dma_address);
+				const auto& frame_stats_diag = get_stats();
+
+				sys_rsx.warning("VSH diag: rsx state: put=0x%x get=0x%x ref=0x%x flip_index=%u vblank_count=%u draw_calls=%u submit_count=%u",
+					static_cast<u32>(dma_ctrl.put), static_cast<u32>(dma_ctrl.get), static_cast<u32>(dma_ctrl.ref),
+					static_cast<u32>(int_flip_index), static_cast<u32>(vblank_count.load()), frame_stats_diag.draw_calls, frame_stats_diag.submit_count);
+			}
 		}
 	}
 
@@ -724,11 +735,15 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	// Flip/queue/reset flip/flip event/user command/vblank as trace to help with log spam
 	const bool trace_log = (package_id == 0x102 || package_id == 0x103 || package_id == 0x10a || package_id == 0xFEC || package_id == 0xFED || package_id == 0xFEF);
 
+	// Diagnostic (0.85 black screen): show the first flip/queue/etc. packages VSH sends, they are trace level otherwise
+	static atomic_t<u32> s_vsh_trace_pkg{0};
+	const bool vsh_trace_visible = trace_log && Emu.IsVsh() && s_vsh_trace_pkg++ < 60u;
+
 	if (!trace_log)
 	{
 		sys_rsx.warning("sys_rsx_context_attribute(): package_id=0x%x called from %s", package_id, rsx_caller_trace());
 	}
-	(trace_log ? sys_rsx.trace : sys_rsx.warning)("sys_rsx_context_attribute(context_id=0x%x, package_id=0x%x, a3=0x%llx, a4=0x%llx, a5=0x%llx, a6=0x%llx)", context_id, package_id, a3, a4, a5, a6);
+	((trace_log && !vsh_trace_visible) ? sys_rsx.trace : sys_rsx.warning)("sys_rsx_context_attribute(context_id=0x%x, package_id=0x%x, a3=0x%llx, a4=0x%llx, a5=0x%llx, a6=0x%llx)", context_id, package_id, a3, a4, a5, a6);
 
 	// todo: these event ports probly 'shouldnt' be here as i think its supposed to be interrupts that are sent from rsx somewhere in lv1
 
