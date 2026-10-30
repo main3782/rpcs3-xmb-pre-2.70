@@ -737,7 +737,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 	// Diagnostic (0.85 black screen): show the first flip/queue/etc. packages VSH sends, they are trace level otherwise
 	static atomic_t<u32> s_vsh_trace_pkg{0};
-	const bool vsh_trace_visible = trace_log && Emu.IsVsh() && s_vsh_trace_pkg++ < 60u;
+	const bool vsh_trace_visible = trace_log && package_id != 0xFED && Emu.IsVsh() && s_vsh_trace_pkg++ < 60u;
 
 	if (!trace_log)
 	{
