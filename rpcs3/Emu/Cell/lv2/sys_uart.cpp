@@ -2059,7 +2059,19 @@ void vuart_av_thread::parse_tx_buffer(u32 buf_size)
 			return;
 		}
 
-		if (hdr->version != PS3AV_VERSION)
+		// 0.85 VSH's libavset speaks protocol version 0x204. Treat it like 0x205 (the packet sizes are checked below, so a
+		// layout difference shows up as an "Invalid size for cid" error instead of being silently misparsed).
+		if (hdr->version == 0x204)
+		{
+			static bool s_legacy_av_logged = false;
+
+			if (!s_legacy_av_logged)
+			{
+				s_legacy_av_logged = true;
+				sys_uart.warning("AV: accepting legacy packet version 0x%04x as 0x%04x", hdr->version, static_cast<u32>(PS3AV_VERSION));
+			}
+		}
+		else if (hdr->version != PS3AV_VERSION)
 		{
 			if (hdr->version >= 0x100 && hdr->version < PS3AV_VERSION)
 			{
@@ -2156,9 +2168,12 @@ u32 vuart_av_thread::get_reply_buf_free_size()
 template<bool UseScBuffer>
 void vuart_av_thread::write_resp(u32 cid, u32 status, const void *data, u16 data_size)
 {
+	// Answer with the protocol version the client uses (set by AV_INIT), 0x205 until then
+	const u16 reply_version = av_cmd_ver ? av_cmd_ver : static_cast<u16>(PS3AV_VERSION);
+
 	const ps3av_pkt_reply_hdr pkt_hdr =
 	{
-		PS3AV_VERSION,
+		reply_version,
 		data_size + 8U,
 		cid | PS3AV_REPLY_BIT,
 		status
