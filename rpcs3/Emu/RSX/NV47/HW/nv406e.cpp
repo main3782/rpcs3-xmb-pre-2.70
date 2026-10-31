@@ -4,6 +4,7 @@
 
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/system_config.h"
+#include "Emu/System.h"
 
 #include "context_accessors.define.h"
 
@@ -11,6 +12,27 @@ namespace rsx
 {
 	namespace nv406e
 	{
+		// 0.85 VSH: its libgcm never programs NV406E_SEMAPHORE_CONTEXT_DMA, so the register keeps its reset value (0), which maps to
+		// local memory and makes the semaphore release bail out (and recover_fifo() then breaks the FIFO state).
+		// Assume the label area in that case. The flip semaphore (offset 0x10) is the read-only kind. This is a guess, same as for NV4097.
+		static u32 vsh_semaphore_context_dma(u32 dma, u32 offset)
+		{
+			if (dma == 0 && Emu.IsVsh())
+			{
+				static bool s_logged = false;
+
+				if (!s_logged)
+				{
+					s_logged = true;
+					rsx_log.warning("VSH: NV406E semaphore context DMA is not set, assuming the label area");
+				}
+
+				return offset == 0x10 ? static_cast<u32>(CELL_GCM_CONTEXT_DMA_SEMAPHORE_R) : static_cast<u32>(CELL_GCM_CONTEXT_DMA_SEMAPHORE_RW);
+			}
+
+			return dma;
+		}
+
 		void set_reference(context* ctx, u32 /*reg*/, u32 arg)
 		{
 			RSX(ctx)->sync();
@@ -24,7 +46,7 @@ namespace rsx
 		void semaphore_acquire(context* ctx, u32 /*reg*/, u32 arg)
 		{
 			RSX(ctx)->sync_point_request.release(true);
-			const u32 addr = get_address(REGS(ctx)->semaphore_offset_406e(), REGS(ctx)->semaphore_context_dma_406e());
+			const u32 addr = get_address(REGS(ctx)->semaphore_offset_406e(), vsh_semaphore_context_dma(REGS(ctx)->semaphore_context_dma_406e(), REGS(ctx)->semaphore_offset_406e()));
 
 			// Syncronization point, may be associated with memory changes without actually changing addresses
 			RSX(ctx)->m_graphics_state |= rsx::pipeline_state::fragment_program_needs_rehash;
@@ -114,7 +136,7 @@ namespace rsx
 				return;
 			}
 
-			const u32 ctxt = REGS(ctx)->semaphore_context_dma_406e();
+			const u32 ctxt = vsh_semaphore_context_dma(REGS(ctx)->semaphore_context_dma_406e(), offset);
 
 			// By avoiding doing this on flip's semaphore release
 			// We allow last gcm's registers reset to occur in case of a crash
