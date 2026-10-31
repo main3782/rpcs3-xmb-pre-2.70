@@ -9,6 +9,13 @@
 
 #include "sys_process.h"
 
+#include "Emu/System.h"
+
+#include <array>
+#include <map>
+#include <mutex>
+#include <tuple>
+
 LOG_CHANNEL(sys_hid);
 
 error_code sys_hid_manager_open(ppu_thread& ppu, u64 device_type, u64 port_no, vm::ptr<u32> handle)
@@ -151,7 +158,7 @@ error_code sys_hid_manager_add_hot_key_observer(u32 event_queue, vm::ptr<u32> un
 	return CELL_OK;
 }
 
-error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 buf_size)
+static error_code sys_hid_manager_read_impl(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 buf_size)
 {
 	if (!buf)
 	{
@@ -188,4 +195,48 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 	}
 
 	return CELL_OK;
+}
+
+// Diagnostic (0.85 XMB ignores the controller): log what VSH reads from the HID manager.
+// Logs the first call of every (handle, pkg_id, size, result) combination and every change of the returned bytes (capped).
+error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 buf_size)
+{
+	const error_code ret = sys_hid_manager_read_impl(handle, pkg_id, buf, buf_size);
+
+	if (Emu.IsVsh() && buf)
+	{
+		static std::mutex s_mutex;
+		static std::map<std::tuple<u32, u32, u64, s32>, std::array<u8, 16>> s_last;
+		static u32 s_logged = 0;
+
+		std::array<u8, 16> bytes{};
+		const u64 count = std::min<u64>(buf_size, bytes.size());
+
+		if (count > 0 && vm::check_addr(buf.addr(), vm::page_readable, static_cast<u32>(count)))
+		{
+			std::memcpy(bytes.data(), buf.get_ptr(), static_cast<usz>(count));
+		}
+
+		const auto key = std::make_tuple(handle, pkg_id, buf_size, static_cast<s32>(ret.value));
+
+		std::lock_guard lock(s_mutex);
+
+		const auto it = s_last.find(key);
+		const bool is_new = it == s_last.end();
+
+		if ((is_new || it->second != bytes) && s_logged < 300u)
+		{
+			s_logged++;
+			s_last[key] = bytes;
+
+			const auto ppu = cpu_thread::get_current<ppu_thread>();
+
+			sys_hid.warning("VSH diag: sys_hid_manager_read(handle=0x%x, pkg_id=0x%x, buf_size=0x%llx) -> 0x%x%s, bytes=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x, cia=0x%x lr=0x%x",
+				handle, pkg_id, buf_size, static_cast<u32>(ret.value), is_new ? " (new)" : "",
+				bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+				ppu ? ppu->cia : 0u, ppu ? static_cast<u32>(ppu->lr) : 0u);
+		}
+	}
+
+	return ret;
 }
