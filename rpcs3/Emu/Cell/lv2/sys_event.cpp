@@ -15,6 +15,7 @@
 
 #include "util/asm.hpp"
 
+#include <map>
 #include <mutex>
 #include <set>
 
@@ -198,6 +199,37 @@ static void event_diag_receive(u32 equeue_id, u64 timeout)
 	}
 
 	sys_event.warning("VSH diag: queue_receive thread='%s' equeue_id=0x%x timeout=0x%llx: %s", name, equeue_id, timeout, event_caller_trace());
+}
+
+// Diagnostic (0.85 black screen): log the first 3 sends of every (thread, port) pair, then every 500th
+static void event_diag_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
+{
+	static std::mutex s_mutex;
+	static std::map<std::pair<std::string, u32>, u32> s_counts;
+
+	const std::string name = event_diag_thread_name();
+	const auto key = std::make_pair(name, eport_id);
+
+	std::lock_guard lock(s_mutex);
+
+	auto it = s_counts.find(key);
+
+	if (it == s_counts.end())
+	{
+		if (s_counts.size() >= 300u)
+		{
+			return;
+		}
+
+		it = s_counts.emplace(key, 0u).first;
+	}
+
+	const u32 count = ++it->second;
+
+	if (count <= 3u || count % 500u == 0u)
+	{
+		sys_event.warning("VSH diag: port_send #%u eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx by '%s': %s", count, eport_id, data1, data2, data3, name, event_caller_trace());
+	}
 }
 
 CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_event_port* port)
@@ -1004,12 +1036,7 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 
 	if (Emu.IsVsh())
 	{
-		static atomic_t<u32> s_send_count = 0;
-
-		if (s_send_count++ < 250u)
-		{
-			sys_event.warning("VSH diag: port_send eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx by '%s': %s", eport_id, data1, data2, data3, event_diag_thread_name(), event_caller_trace());
-		}
+		event_diag_send(eport_id, data1, data2, data3);
 	}
 
 	bool notified_thread = false;
