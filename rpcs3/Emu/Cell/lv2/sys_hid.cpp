@@ -217,7 +217,8 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 			std::memcpy(bytes.data(), buf.get_ptr(), static_cast<usz>(count));
 		}
 
-		const auto key = std::make_tuple(handle, pkg_id, buf_size, static_cast<s32>(ret.value));
+		const s32 ret_value = static_cast<s32>(ret);
+		const auto key = std::make_tuple(handle, pkg_id, buf_size, ret_value);
 
 		std::lock_guard lock(s_mutex);
 
@@ -232,7 +233,7 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 			const auto ppu = cpu_thread::get_current<ppu_thread>();
 
 			sys_hid.warning("VSH diag: sys_hid_manager_read(handle=0x%x, pkg_id=0x%x, buf_size=0x%llx) -> 0x%x%s, bytes=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x, cia=0x%x lr=0x%x",
-				handle, pkg_id, buf_size, static_cast<u32>(ret.value), is_new ? " (new)" : "",
+				handle, pkg_id, buf_size, static_cast<u32>(ret_value), is_new ? " (new)" : "",
 				bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
 				ppu ? ppu->cia : 0u, ppu ? static_cast<u32>(ppu->lr) : 0u);
 		}
