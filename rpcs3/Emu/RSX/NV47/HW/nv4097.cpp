@@ -5,6 +5,7 @@
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/RSX/Common/BufferUtils.h"
 #include "Emu/system_config.h"
+#include "Emu/System.h"
 
 #define RSX(ctx) ctx->rsxthr
 #define REGS(ctx) (&rsx::method_registers)
@@ -14,6 +15,27 @@ namespace rsx
 {
 	namespace nv4097
 	{
+		// 0.85 VSH: its libgcm has no context DMA ids and never programs NV4097_SET_CONTEXT_DMA_SEMAPHORE.
+		// The register keeps its reset value (0), which would put the label writes into local memory instead of the label area.
+		// Assume the semaphore (label) context in that case. This is a guess, based on the "semaphore unexpected address" errors.
+		static u32 vsh_semaphore_context_dma(u32 dma)
+		{
+			if (dma == 0 && Emu.IsVsh())
+			{
+				static bool s_logged = false;
+
+				if (!s_logged)
+				{
+					s_logged = true;
+					rsx_log.warning("VSH: NV4097 semaphore context DMA is not set, assuming CELL_GCM_CONTEXT_DMA_SEMAPHORE_RW");
+				}
+
+				return CELL_GCM_CONTEXT_DMA_SEMAPHORE_RW;
+			}
+
+			return dma;
+		}
+
 		///// Program management
 
 		void set_shader_program_dirty(context* ctx, u32, u32)
@@ -800,7 +822,7 @@ namespace rsx
 				return;
 			}
 
-			const u32 addr = get_address(offset, REGS(ctx)->semaphore_context_dma_4097());
+			const u32 addr = get_address(offset, vsh_semaphore_context_dma(REGS(ctx)->semaphore_context_dma_4097()));
 
 			if (RSX(ctx)->label_addr >> 28 != addr >> 28)
 			{
@@ -830,7 +852,7 @@ namespace rsx
 				return;
 			}
 
-			const u32 addr = get_address(offset, REGS(ctx)->semaphore_context_dma_4097());
+			const u32 addr = get_address(offset, vsh_semaphore_context_dma(REGS(ctx)->semaphore_context_dma_4097()));
 
 			if (RSX(ctx)->label_addr >> 28 != addr >> 28)
 			{
