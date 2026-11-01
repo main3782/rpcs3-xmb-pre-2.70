@@ -24,6 +24,20 @@ static std::unique_ptr<atomic_t<bool>[]> s_tls_map; // I'd like to make it std::
 
 static u32 ppu_alloc_tls()
 {
+	if (!s_tls_size)
+	{
+		// sys_initialize_tls() was never called (0.84's VSH sets its TLS up itself and uses the lv2 thread syscalls directly), but an HLE
+		// module such as libio can still create a thread here. Give that thread a zeroed TLS area of its own.
+		const u32 area = vm::alloc(0x8000, vm::main);
+
+		if (area)
+		{
+			std::memset(vm::base(area), 0, 0x8000);
+		}
+
+		return area;
+	}
+
 	u32 addr = 0;
 
 	for (u32 i = 0; i < s_tls_max; i++)
@@ -50,6 +64,13 @@ static u32 ppu_alloc_tls()
 
 static void ppu_free_tls(u32 addr)
 {
+	if (!s_tls_size)
+	{
+		// Allocated without sys_initialize_tls() (see ppu_alloc_tls)
+		ensure(vm::dealloc(addr, vm::main));
+		return;
+	}
+
 	// Calculate TLS position
 	const u32 i = (addr - s_tls_area) / s_tls_size;
 
