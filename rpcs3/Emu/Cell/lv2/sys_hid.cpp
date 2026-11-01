@@ -205,6 +205,41 @@ static error_code sys_hid_manager_read_impl(u32 handle, u32 pkg_id, vm::ptr<void
 	return CELL_OK;
 }
 
+// Diagnostic: LR + a few saved return addresses of the current PPU thread
+static std::string hid_diag_trace()
+{
+	const auto ppu = cpu_thread::get_current<ppu_thread>();
+
+	if (!ppu)
+	{
+		return "(not a PPU thread)";
+	}
+
+	std::string out = fmt::format("lr=0x%x bt=[", static_cast<u32>(ppu->lr));
+	u32 sp = static_cast<u32>(ppu->gpr[1]);
+
+	for (u32 i = 0; i < 8; i++)
+	{
+		if (!vm::check_addr(sp, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		const u32 back = static_cast<u32>(vm::_ref<u64>(sp));
+
+		if (back <= sp || !vm::check_addr(back + 0x10, vm::page_readable, 8))
+		{
+			break;
+		}
+
+		fmt::append(out, "%s0x%x", i ? " " : "", static_cast<u32>(vm::_ref<u64>(back + 0x10)));
+		sp = back;
+	}
+
+	out += "]";
+	return out;
+}
+
 // Diagnostic (0.85 XMB ignores the controller): log what VSH reads from the HID manager.
 // Logs the first call of every (handle, pkg_id, size, result) combination and every change of the returned bytes (capped).
 error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 buf_size)
@@ -240,10 +275,10 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 
 			const auto ppu = cpu_thread::get_current<ppu_thread>();
 
-			sys_hid.warning("VSH diag: sys_hid_manager_read(handle=0x%x, pkg_id=0x%x, buf_size=0x%llx) -> 0x%x%s, bytes=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x, cia=0x%x lr=0x%x",
+			sys_hid.warning("VSH diag: sys_hid_manager_read(handle=0x%x, pkg_id=0x%x, buf_size=0x%llx) -> 0x%x%s, bytes=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x, cia=0x%x %s",
 				handle, pkg_id, buf_size, static_cast<u32>(ret_value), is_new ? " (new)" : "",
 				bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-				ppu ? ppu->cia : 0u, ppu ? static_cast<u32>(ppu->lr) : 0u);
+				ppu ? ppu->cia : 0u, hid_diag_trace());
 		}
 	}
 
