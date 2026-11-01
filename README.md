@@ -12,7 +12,9 @@ Even then, I REQUEST for all the appreciations to be given to the actual RPCS3 d
 
 # Quirks
 
-**0.90** - For some reason, 0.90 seems to have some sort of RNG to its boot process? Usually, 0.90 shows nothing on the screen whatsoever and instead a black screen, but 1 in 10 times, it does actually display its content. As to why this happens i have NO idea. Just keep trying to boot it until it decides to work. 0.85 works fine.
+**TURN PPU/SPU LLVM PRECOMPILATION OFF WHEN RUNNING 0.90 AND EARLIER!!!!**
+
+**0.90 specifically** - For some reason, 0.90 seems to have some sort of RNG to its boot process? Usually, 0.90 shows nothing on the screen whatsoever and instead a black screen, but 1 in 10 times, it does actually display its content. As to why this happens i have NO idea. Just keep trying to boot it until it decides to work. 0.85 works fine.
 
 2.17 and below:
 - No audio
