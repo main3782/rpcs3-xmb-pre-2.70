@@ -179,6 +179,14 @@ static error_code sys_hid_manager_read_impl(u32 handle, u32 pkg_id, vm::ptr<void
 		{
 			u64 cpySize = std::min(static_cast<u64>(tmpData->len) * sizeof(u16), buf_size * sizeof(u16));
 			memcpy(buf.get_ptr(), &tmpData->button, cpySize);
+
+			// 0.85 VSH: its libio stores the return value directly as CellPadData.len, which counts u16 entries (24 for a DualShock 3),
+			// like the pkg_id 0x81 case below. Returning the byte count (48) is the suspected reason the XMB ignores the pad.
+			if (Emu.IsVsh())
+			{
+				return not_an_error(cpySize / 2);
+			}
+
 			return not_an_error(cpySize);
 		}
 	}
