@@ -71,6 +71,12 @@
 
 LOG_CHANNEL(sys_log, "SYS");
 
+// VSH is vsh.self in 0.85 and newer, but a monolithic vshmain.self / full_vshmain.self in the root of dev_flash in 0.84 and older
+static bool is_vsh_boot_path(std::string_view path)
+{
+	return path.ends_with("vsh.self"sv) || path.ends_with("vshmain.self"sv);
+}
+
 // Preallocate 32 MiB
 stx::manual_typemap<void, 0x20'00000, 128> g_fixed_typemap;
 
@@ -1866,7 +1872,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			fixup_settings(&_psf);
 
 			// Force audio provider
-			if (m_path.ends_with("vsh.self"sv))
+			if (is_vsh_boot_path(m_path))
 			{
 				g_cfg.audio.provider.set(audio_provider::rsxaudio);
 			}
@@ -2827,7 +2833,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 		// Early firmware (e.g. 0.85) ships no liblv2.sprx in sys/external, so do not demand it when booting VSH itself:
 		// the modules it lacks are provided by the HLE implementations.
-		if (ppu_exec == elf_error::ok && !m_path.ends_with("vsh.self"sv) && !fs::is_file(g_cfg_vfs.get_dev_flash() + "sys/external/liblv2.sprx"))
+		if (ppu_exec == elf_error::ok && !is_vsh_boot_path(m_path) && !fs::is_file(g_cfg_vfs.get_dev_flash() + "sys/external/liblv2.sprx"))
 		{
 			const auto& libs = g_cfg.core.libraries_control.get_set();
 

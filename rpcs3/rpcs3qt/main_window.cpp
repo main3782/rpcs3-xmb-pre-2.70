@@ -175,6 +175,27 @@ extern void qt_events_aware_op(int repeat_duration_ms, std::function<bool()> wra
 	}
 }
 
+// 0.85 and newer have vsh/module/vsh.self, 0.84 and older have a monolithic VSH in the root of dev_flash
+static std::string find_vsh_boot_path()
+{
+	std::string dev_flash = g_cfg_vfs.get_dev_flash();
+
+	if (!dev_flash.empty() && !dev_flash.ends_with('/'))
+	{
+		dev_flash += '/';
+	}
+
+	for (const char* name : {"vsh/module/vsh.self", "full_vshmain.self", "vshmain.self"})
+	{
+		if (fs::is_file(dev_flash + name))
+		{
+			return dev_flash + name;
+		}
+	}
+
+	return {};
+}
+
 main_window::main_window(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, std::shared_ptr<persistent_settings> persistent_settings, bool with_cli_boot, QWidget* parent)
 	: QMainWindow(parent)
 	, ui(new Ui::main_window)
@@ -288,7 +309,7 @@ void main_window::Init()
 #endif
 
 	// Disable vsh if not present.
-	ui->bootVSHAct->setEnabled(fs::is_file(g_cfg_vfs.get_dev_flash() + "vsh/module/vsh.self"));
+	ui->bootVSHAct->setEnabled(!find_vsh_boot_path().empty());
 
 	// Focus to search bar by default
 	ui->mw_searchbar->setFocus();
@@ -724,7 +745,7 @@ void main_window::BootISO()
 void main_window::BootVSH()
 {
 	gui_log.notice("Booting from BootVSH...");
-	Boot(g_cfg_vfs.get_dev_flash() + "/vsh/module/vsh.self");
+	Boot(find_vsh_boot_path());
 }
 
 void main_window::BootRsxCapture(std::string path)
@@ -1770,7 +1791,7 @@ void main_window::HandlePupInstallation(main_window* mw, const QString& file_pat
 
 		if (mw)
 		{
-			mw->ui->bootVSHAct->setEnabled(fs::is_file(g_cfg_vfs.get_dev_flash() + "/vsh/module/vsh.self"));
+			mw->ui->bootVSHAct->setEnabled(!find_vsh_boot_path().empty());
 			mw->m_gui_settings->ShowInfoBox(tr("Success!"), tr("Successfully installed PS3 firmware and LLE Modules!"), gui::ib_pup_success, mw);
 			mw->CreateFirmwareCache();
 		}
@@ -3176,7 +3197,7 @@ void main_window::CreateConnects()
 	{
 		vfs_dialog dlg(m_gui_settings, this);
 		dlg.exec();
-		ui->bootVSHAct->setEnabled(fs::is_file(g_cfg_vfs.get_dev_flash() + "vsh/module/vsh.self")); // dev_flash may have changed. Disable vsh if not present.
+		ui->bootVSHAct->setEnabled(!find_vsh_boot_path().empty()); // dev_flash may have changed. Disable vsh if not present.
 		m_game_list_frame->Refresh(true); // dev_hdd0 may have changed. Refresh just in case.
 	});
 
