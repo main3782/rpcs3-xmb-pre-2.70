@@ -177,16 +177,24 @@ static error_code sys_hid_manager_read_impl(u32 handle, u32 pkg_id, vm::ptr<void
 		vm::var<CellPadData> tmpData;
 		if ((cellPadGetData(0, +tmpData) == CELL_OK) && tmpData->len > 0)
 		{
-			u64 cpySize = std::min(static_cast<u64>(tmpData->len) * sizeof(u16), buf_size * sizeof(u16));
-			memcpy(buf.get_ptr(), &tmpData->button, cpySize);
-
-			// 0.85 VSH: its libio stores the return value directly as CellPadData.len, which counts u16 entries (24 for a DualShock 3),
-			// like the pkg_id 0x81 case below. Returning the byte count (48) is the suspected reason the XMB ignores the pad.
 			if (Emu.IsVsh())
 			{
-				return not_an_error(cpySize / 2);
+				// 0.85 VSH: libio hands this buffer straight to paf.sprx, which reads it as bytes (len, then one byte per entry):
+				// digital buttons at entries 2 and 3, sticks (centred on 0x80) at entries 4 to 7. Every entry of the DualShock 3 data fits
+				// in one byte, so give the low byte of each u16 entry. The returned length counts entries (24), not bytes.
+				const u64 count = std::min(static_cast<u64>(tmpData->len), buf_size);
+				u8* const out = static_cast<u8*>(buf.get_ptr());
+
+				for (u64 i = 0; i < count; i++)
+				{
+					out[i] = static_cast<u8>(static_cast<u16>(tmpData->button[i]) & 0xff);
+				}
+
+				return not_an_error(count);
 			}
 
+			u64 cpySize = std::min(static_cast<u64>(tmpData->len) * sizeof(u16), buf_size * sizeof(u16));
+			memcpy(buf.get_ptr(), &tmpData->button, cpySize);
 			return not_an_error(cpySize);
 		}
 	}
