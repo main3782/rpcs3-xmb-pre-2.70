@@ -504,6 +504,23 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 	render->display_buffers_count = 0;
 	render->current_display_buffer = 0;
 	render->label_addr = vm::cast(*lpar_reports);
+
+	if (!render->device_addr && Emu.IsVsh())
+	{
+		// 0.84 VSH never calls sys_rsx_device_map, but rsx::thread::init() writes a label into the device area (device_addr + 0x30),
+		// which is address 0x30 when nothing was mapped. Map the device here, like sys_rsx_device_map(8) would do.
+		const auto device_area = vm::reserve_map(vm::rsx_context, 0, 0x10000000, 0x403);
+		const u32 device_addr = device_area ? device_area->alloc(0x100000) : 0;
+
+		if (!device_addr)
+		{
+			return CELL_ENOMEM;
+		}
+
+		sys_rsx.warning("sys_rsx_context_allocate(): VSH has not mapped the RSX device, mapped address 0x%x", device_addr);
+		render->device_addr = device_addr;
+	}
+
 	render->init(dma_address);
 
 	*context_id = 0x55555555;
