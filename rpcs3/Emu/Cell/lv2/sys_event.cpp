@@ -980,6 +980,19 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 		sys_event.warning("AUDIO-SRV request: op=0x%x d1=0x%llx d2=0x%llx d3=0x%llx reply_key=0x%llx %s", op, d1, d2, d3, reply_key, event_caller_trace());
 	}
 
+	// 0.84's client sends these with a send-only helper and never reads a reply (the round-trip helper receives with a 400 ms timeout
+	// and then checks the reply opcode). Answering them leaves a stale message in the shared reply queue, which the next real request
+	// reads instead of its own reply, fails the opcode check and aborts cellSurMixerStart() with 0x80310702.
+	if (op == 0x0b || op == 0x0e || op == 0x0f || op == 0x12 || op == 0x1f)
+	{
+		if (do_log)
+		{
+			sys_event.warning("AUDIO-SRV: one-way op=0x%x, no reply", op);
+		}
+
+		return;
+	}
+
 	u64 reply_op = 0;
 	u64 r2 = 0;
 	u64 r3 = 0;
