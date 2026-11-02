@@ -945,6 +945,8 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 	static atomic_t<u32> s_log_count = 0;
 	static atomic_t<u32> s_session_count = 0;
 	static atomic_t<u64> s_reply_keys[64]{}; // Reply queue ipc key of each client connection, indexed by session number
+	static atomic_t<u8> s_port_pending[64]{};  // Sessions that sent op 0x03 and wait for op 0x05 (0.84 audio port creation)
+	static atomic_t<u32> s_port_count = 0;
 
 	const bool do_log = s_log_count++ < 400;
 	const u32 op = static_cast<u32>(d1 & 0x1ff);
@@ -990,6 +992,30 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 	case 0x09: reply_op = 0x0a; r2 = 0x8000cafe02465a00ull; r3 = 8; break;
 	case 0x1c: reply_op = 0x1d; r2 = 0; break;
 	case 0x1a4: reply_op = 0x1a5; r2 = 0x00080008; break; // two packed 16-bit values stored by the client, meaning unknown (guess: 8 and 8)
+	// 0.84 creates its mixer port with op 0x03 (d2 = 0x8000000008, d3 = 1.0f and parameters) followed by op 0x05 (d2 = d2 of the op 0x04 reply).
+	// The client then calls sys_mmapper_allocate_shared_memory(ipc_key = d2 of the op 0x06 reply, size = d3 of the op 0x04 reply,
+	// flags = d3 of the op 0x06 reply) and maps the memory. With empty replies that was (0, 0, 0), which fails with CELL_EALIGN and aborts
+	// VSH's initSurMixer(). Sizes and keys here are guesses: 128 KB (8 channels * 16 blocks * 256 samples * 4 bytes), 64 KB granularity.
+	case 0x03:
+	{
+		reply_op = 0x04;
+		r2 = 1;
+		r3 = 0x20000;
+		s_port_pending[(session >> 9) % std::size(s_port_pending)] = 1;
+		break;
+	}
+	case 0x05:
+	{
+		reply_op = 0x06;
+
+		if (s_port_pending[(session >> 9) % std::size(s_port_pending)].exchange(0))
+		{
+			r2 = 0x8000cafe02465b00ull + (u64{s_port_count++} << 8);
+			r3 = 0x8200; // NOT_CARE | 64 KB granularity, so RPCS3 creates the shared memory
+		}
+
+		break;
+	}
 	default:
 	{
 		// Every client function checked so far expects (request opcode + 1) in the reply, so guess that with an empty payload
