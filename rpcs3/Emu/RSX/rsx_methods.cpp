@@ -1753,6 +1753,18 @@ namespace rsx
 			}
 		}
 
+		// Early firmware (0.84): the driver object (bound with GCM_SET_DRIVER_OBJECT, 0xE000) also takes methods 0xE200 + 4 * index, which later
+		// firmware does not use. Their meaning is unknown, ignore them instead of aborting the FIFO.
+		for (u32 index = 0; index < 64; index++)
+		{
+			const u32 method = (0xE200u >> 2) + index;
+
+			if (methods[method] == &invalid_method)
+			{
+				methods[method] = nullptr;
+			}
+		}
+
 		// REGS(ctx)->init();
 		method_registers.init();
 
