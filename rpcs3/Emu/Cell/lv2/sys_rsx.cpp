@@ -519,6 +519,9 @@ static error_code rsx_allocate_secondary_context(cpu_thread& cpu, vm::ptr<u32> c
 	sys_event_queue_create(cpu, vm::get_addr(&driverInfo.handler_queue), attr, 0, 0x20);
 	*vm::_ptr<be_t<u32>>(vm::get_addr(&driverInfo) + legacy_di_handler_queue) = driverInfo.handler_queue;
 
+	// sys_event_queue_create may clear the wait flag, and the destructor of attr takes the vm lock
+	cpu.state += cpu_flag::wait;
+
 	s_rsx_secondary_context = true;
 	*context_id = rsx_secondary_context_id;
 
