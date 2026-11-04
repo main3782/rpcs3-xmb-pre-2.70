@@ -177,6 +177,16 @@ static u32 rsx_get_handlers_mask(u32 driver_info_addr)
 	return static_cast<u32>(vm::_ref<RsxDriverInfo>(driver_info_addr).handlers);
 }
 
+// 0.82 VSH's libgcm initialises two RSX contexts (cellGcmInit-like call with a count of 2). We only have one RSX thread, so for the
+// legacy firmware the second context gets its own memory and a valid driver info, but nothing is attached to it: it is inert.
+constexpr u32 rsx_secondary_context_id = 0x55555556;
+static bool s_rsx_secondary_context = false;
+
+static bool rsx_is_secondary_context(u32 context_id)
+{
+	return s_rsx_secondary_context && context_id == rsx_secondary_context_id;
+}
+
 bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 {
 	// Diagnostic: log whenever the handler mask set by the guest (gcm) changes, and a sample of events every 256 calls,
@@ -442,6 +452,79 @@ error_code sys_rsx_memory_free(cpu_thread& cpu, u32 mem_handle)
  * @param mem_ctx (IN): mem_ctx given by sys_rsx_memory_allocate
  * @param system_mode (IN):
  */
+static error_code rsx_allocate_secondary_context(cpu_thread& cpu, vm::ptr<u32> context_id, vm::ptr<u64> lpar_dma_control, vm::ptr<u64> lpar_driver_info, vm::ptr<u64> lpar_reports, u64 system_mode)
+{
+	const auto render = rsx::get_current_renderer();
+
+	const auto area = vm::reserve_map(vm::rsx_context, 0, 0x10000000, 0x403);
+	const u32 dma_address = area ? area->alloc(0x300000) : 0;
+
+	if (!dma_address)
+	{
+		return CELL_ENOMEM;
+	}
+
+	sys_rsx.warning("sys_rsx_context_allocate(): Mapped address 0x%x for the secondary (inert) context", dma_address);
+
+	*lpar_dma_control = dma_address;
+	*lpar_driver_info = dma_address + 0x100000;
+	*lpar_reports = dma_address + 0x200000;
+
+	auto& reports = *vm::_ptr<RsxReports>(vm::cast(*lpar_reports));
+	std::memset(&reports, 0, sizeof(RsxReports));
+
+	for (usz i = 0; i < std::size(reports.notify); ++i)
+		reports.notify[i].timestamp = -1;
+
+	for (usz i = 0; i < std::size(reports.semaphore); i += 4)
+	{
+		reports.semaphore[i + 0] = 0x1337C0D3;
+		reports.semaphore[i + 1] = 0x1337BABE;
+		reports.semaphore[i + 2] = 0x1337BEEF;
+		reports.semaphore[i + 3] = 0x1337F001;
+	}
+
+	for (usz i = 0; i < std::size(reports.report); ++i)
+	{
+		reports.report[i].val = 0;
+		reports.report[i].timestamp = -1;
+		reports.report[i].pad = -1;
+	}
+
+	auto& driverInfo = *vm::_ptr<RsxDriverInfo>(vm::cast(*lpar_driver_info));
+	std::memset(&driverInfo, 0, sizeof(RsxDriverInfo));
+
+	driverInfo.version_driver = 0x20f;
+	driverInfo.version_gpu = 0x5c;
+	driverInfo.memory_size = render->local_mem_size;
+	driverInfo.nvcore_frequency = 500000000;
+	driverInfo.memory_frequency = 650000000;
+	driverInfo.reportsNotifyOffset = 0x1000;
+	driverInfo.reportsOffset = 0;
+	driverInfo.reportsReportOffset = 0x1400;
+	driverInfo.systemModeFlags = static_cast<u32>(system_mode);
+	driverInfo.hardware_channel = 1;
+
+	auto& dmaControl = *vm::_ptr<RsxDmaControl>(vm::cast(*lpar_dma_control));
+	dmaControl.get = 0;
+	dmaControl.put = 0;
+	dmaControl.ref = 0;
+
+	// An event queue for the interrupt thread of this context, so that it blocks instead of failing. Nothing ever sends to it.
+	vm::var<sys_event_queue_attribute_t, vm::page_allocator<>> attr;
+	attr->protocol = SYS_SYNC_PRIORITY;
+	attr->type = SYS_PPU_QUEUE;
+	attr->name_u64 = 0;
+
+	sys_event_queue_create(cpu, vm::get_addr(&driverInfo.handler_queue), attr, 0, 0x20);
+	*vm::_ptr<be_t<u32>>(vm::get_addr(&driverInfo) + legacy_di_handler_queue) = driverInfo.handler_queue;
+
+	s_rsx_secondary_context = true;
+	*context_id = rsx_secondary_context_id;
+
+	return CELL_OK;
+}
+
 error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm::ptr<u64> lpar_dma_control, vm::ptr<u64> lpar_driver_info, vm::ptr<u64> lpar_reports, u64 mem_ctx, u64 system_mode)
 {
 	cpu.state += cpu_flag::wait;
@@ -460,9 +543,16 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 
 	if (render->dma_address)
 	{
+		if (rsx_legacy_driver_info() && !s_rsx_secondary_context)
+		{
+			return rsx_allocate_secondary_context(cpu, context_id, lpar_dma_control, lpar_driver_info, lpar_reports, system_mode);
+		}
+
 		// We currently do not support multiple contexts
 		fmt::throw_exception("sys_rsx_context_allocate was called twice");
 	}
+
+	s_rsx_secondary_context = false;
 
 	const auto area = vm::reserve_map(vm::rsx_context, 0, 0x10000000, 0x403);
 	const u32 dma_address = area ? area->alloc(0x300000) : 0;
@@ -588,6 +678,12 @@ error_code sys_rsx_context_free(ppu_thread& ppu, u32 context_id)
 
 	sys_rsx.todo("sys_rsx_context_free(context_id=0x%x)", context_id);
 
+	if (rsx_is_secondary_context(context_id))
+	{
+		s_rsx_secondary_context = false;
+		return CELL_OK;
+	}
+
 	const auto render = rsx::get_current_renderer();
 
 	rsx::eng_lock fifo_lock(render);
@@ -644,6 +740,11 @@ error_code sys_rsx_context_iomap(cpu_thread& cpu, u32 context_id, u64 io, u64 ea
 	cpu.state += cpu_flag::wait;
 
 	sys_rsx.warning("sys_rsx_context_iomap(context_id=0x%x, io=0x%x, ea=0x%x, size=0x%x, flags=0x%llx)", context_id, io, ea, size, flags);
+
+	if (rsx_is_secondary_context(context_id))
+	{
+		return CELL_OK;
+	}
 
 	const auto render = rsx::get_current_renderer();
 
@@ -711,6 +812,11 @@ error_code sys_rsx_context_iounmap(cpu_thread& cpu, u32 context_id, u64 io, u64 
 	cpu.state += cpu_flag::wait;
 
 	sys_rsx.warning("sys_rsx_context_iounmap(context_id=0x%x, io=0x%x, size=0x%x)", context_id, io, size);
+
+	if (rsx_is_secondary_context(context_id))
+	{
+		return CELL_OK;
+	}
 
 	const auto render = rsx::get_current_renderer();
 
@@ -819,6 +925,12 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	if (!render->dma_address)
 	{
 		return { CELL_EINVAL, "dma_address is 0" };
+	}
+
+	if (rsx_is_secondary_context(context_id))
+	{
+		sys_rsx.warning("sys_rsx_context_attribute(): ignored for the secondary context (package_id=0x%x, a3=0x%llx, a4=0x%llx, a5=0x%llx, a6=0x%llx)", package_id, a3, a4, a5, a6);
+		return CELL_OK;
 	}
 
 	if (context_id != 0x55555555)
