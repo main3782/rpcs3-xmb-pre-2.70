@@ -222,7 +222,7 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 		// The legacy interrupt thread reads the event bits from the driver info
 		if (const u32 pending = static_cast<u32>(event_flags))
 		{
-			vm::_ref<atomic_be_t<u32>>(driver_info + legacy_di_pending_events).atomic_op([&](be_t<u32>& bits)
+			vm::_ptr<atomic_be_t<u32>>(driver_info + legacy_di_pending_events)->atomic_op([&](be_t<u32>& bits)
 			{
 				bits = bits | pending;
 			});
@@ -548,7 +548,7 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 	if (rsx_legacy_driver_info())
 	{
 		// 0.83's libgcm reads the queue id for its interrupt thread from here
-		vm::_ref<be_t<u32>>(vm::get_addr(&driverInfo) + legacy_di_handler_queue) = driverInfo.handler_queue;
+		*vm::_ptr<be_t<u32>>(vm::get_addr(&driverInfo) + legacy_di_handler_queue) = driverInfo.handler_queue;
 	}
 
 	render->display_buffers_count = 0;
@@ -1294,7 +1294,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 			if (rsx_legacy_driver_info())
 			{
-				vm::_ref<be_t<u32>>(vm::get_addr(&driverInfo) + legacy_di_user_cmd_param) = intr_cause;
+				*vm::_ptr<be_t<u32>>(vm::get_addr(&driverInfo) + legacy_di_user_cmd_param) = intr_cause;
 			}
 		}
 
