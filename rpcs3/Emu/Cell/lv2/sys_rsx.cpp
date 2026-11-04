@@ -154,6 +154,29 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 	}
 }
 
+// 0.83 VSH (authority ID 0x1070000400000001) has a libgcm built for driver version 0x20f. Its driver info layout is
+// 0x258 bytes shorter before the handler fields than the 0x211 layout in RsxDriverInfo, and the event protocol differs:
+// the interrupt thread takes the pending event bits from a field of the driver info instead of from the event data.
+static bool rsx_legacy_driver_info()
+{
+	return g_ps3_process_info.self_info.valid && g_ps3_process_info.self_info.prog_id_hdr.program_authority_id == 0x1070000400000001ull;
+}
+
+constexpr u32 legacy_di_pending_events = 0x1064; // set by the kernel, consumed (cleared) by the interrupt thread
+constexpr u32 legacy_di_handlers       = 0x1068; // same meaning as RsxDriverInfo::handlers
+constexpr u32 legacy_di_user_cmd_param = 0x1074; // same meaning as RsxDriverInfo::userCmdParam
+constexpr u32 legacy_di_handler_queue  = 0x1078; // same meaning as RsxDriverInfo::handler_queue
+
+static u32 rsx_get_handlers_mask(u32 driver_info_addr)
+{
+	if (rsx_legacy_driver_info())
+	{
+		return static_cast<u32>(vm::_ref<atomic_be_t<u32>>(driver_info_addr + legacy_di_handlers));
+	}
+
+	return static_cast<u32>(vm::_ref<RsxDriverInfo>(driver_info_addr).handlers);
+}
+
 bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 {
 	// Diagnostic: log whenever the handler mask set by the guest (gcm) changes, and a sample of events every 256 calls,
@@ -162,7 +185,7 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 		static std::atomic<u32> s_diag_calls{0};
 		static std::atomic<u32> s_diag_last_mask{umax};
 
-		const u32 mask = static_cast<u32>(vm::_ref<RsxDriverInfo>(driver_info).handlers);
+		const u32 mask = rsx_get_handlers_mask(driver_info);
 		const u32 calls = s_diag_calls.fetch_add(1);
 
 		if (s_diag_last_mask.exchange(mask) != mask)
@@ -186,12 +209,24 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 		}
 	}
 
-	event_flags &= vm::_ref<RsxDriverInfo>(driver_info).handlers | 0xffff'ffffull << 32;
+	event_flags &= static_cast<u64>(rsx_get_handlers_mask(driver_info)) | 0xffff'ffffull << 32;
 
 	if (!event_flags)
 	{
 		// Nothing to do
 		return true;
+	}
+
+	if (rsx_legacy_driver_info())
+	{
+		// The legacy interrupt thread reads the event bits from the driver info
+		if (const u32 pending = static_cast<u32>(event_flags))
+		{
+			vm::_ref<atomic_be_t<u32>>(driver_info + legacy_di_pending_events).atomic_op([&](be_t<u32>& bits)
+			{
+				bits = bits | pending;
+			});
+		}
 	}
 
 	auto error = sys_event_port_send(rsx_event_port, data1, event_flags, data3);
@@ -243,7 +278,7 @@ void _sys_rsx_drain_event_queue(rsx::thread* rsxthr, u64 event_flags = umax, u64
 	const auto& driverInfo = *vm::_ptr<RsxDriverInfo>(rsxthr->driver_info);
 	const u32 rsx_queue_id = driverInfo.handler_queue;
 
-	if (const auto enabled_events = static_cast<u64>(driverInfo.handlers) | (0xffff'ffffull << 32);
+	if (const auto enabled_events = static_cast<u64>(rsx_get_handlers_mask(rsxthr->driver_info)) | (0xffff'ffffull << 32);
 		!(enabled_events & event_flags))
 	{
 		// sys_rsx.trace("Event flag not set.");
@@ -471,8 +506,8 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 	driverInfo.version_driver = 0x211;
 
 	// libgcm compares this with the value it was built for and, on a mismatch, frees the context again but keeps using it.
-	// 0.83 VSH (authority ID 0x1070000400000001) expects 0x20f, 0.84 and newer expect 0x211.
-	if (g_ps3_process_info.self_info.valid && g_ps3_process_info.self_info.prog_id_hdr.program_authority_id == 0x1070000400000001ull)
+	// 0.83 VSH expects 0x20f, 0.84 and newer expect 0x211.
+	if (rsx_legacy_driver_info())
 	{
 		driverInfo.version_driver = 0x20f;
 	}
@@ -509,6 +544,12 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 	render->rsx_event_port = driverInfo.handler_queue;
 	sys_event_queue_create(cpu, vm::get_addr(&driverInfo.handler_queue), attr, 0, 0x20);
 	sys_event_port_connect_local(cpu, render->rsx_event_port, driverInfo.handler_queue);
+
+	if (rsx_legacy_driver_info())
+	{
+		// 0.83's libgcm reads the queue id for its interrupt thread from here
+		vm::_ref<be_t<u32>>(vm::get_addr(&driverInfo) + legacy_di_handler_queue) = driverInfo.handler_queue;
+	}
 
 	render->display_buffers_count = 0;
 	render->current_display_buffer = 0;
@@ -1250,6 +1291,11 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			// The userCmdParam object is shared and we do not want to clobber it.
 			_sys_rsx_drain_event_queue(render, SYS_RSX_EVENT_USER_CMD);
 			driverInfo.userCmdParam = intr_cause;
+
+			if (rsx_legacy_driver_info())
+			{
+				vm::_ref<be_t<u32>>(vm::get_addr(&driverInfo) + legacy_di_user_cmd_param) = intr_cause;
+			}
 		}
 
 		render->send_event(0, SYS_RSX_EVENT_USER_CMD, 0);
