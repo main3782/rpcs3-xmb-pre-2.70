@@ -15,6 +15,7 @@
 #include "Emu/RSX/RSXThread.h"
 #include "util/asm.hpp"
 #include "sys_event.h"
+#include "sys_process.h"
 #include "sys_vm.h"
 
 LOG_CHANNEL(sys_rsx);
@@ -468,6 +469,14 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 	std::memset(&driverInfo, 0, sizeof(RsxDriverInfo));
 
 	driverInfo.version_driver = 0x211;
+
+	// libgcm compares this with the value it was built for and, on a mismatch, frees the context again but keeps using it.
+	// 0.83 VSH (authority ID 0x1070000400000001) expects 0x20f, 0.84 and newer expect 0x211.
+	if (g_ps3_process_info.self_info.valid && g_ps3_process_info.self_info.prog_id_hdr.program_authority_id == 0x1070000400000001ull)
+	{
+		driverInfo.version_driver = 0x20f;
+	}
+
 	driverInfo.version_gpu = 0x5c;
 	driverInfo.memory_size = render->local_mem_size;
 	driverInfo.nvcore_frequency = 500000000; // 0x1DCD6500
