@@ -282,7 +282,7 @@ const std::array<std::pair<ppu_intrp_func_t, std::string_view>, 1024> g_ppu_sysc
 	BIND_SYSC(sys_time_set_current_time),                   //146 (0x092)  ROOT
 	BIND_SYSC(sys_time_get_timebase_frequency),             //147 (0x093)
 	BIND_SYSC(_sys_rwlock_trywlock),                        //148 (0x094)
-	NULL_FUNC(sys_time_get_system_time),                    //149 (0x095)
+	BIND_SYSC(sys_time_get_system_time_lv2),                //149 (0x095)
 	BIND_SYSC(sys_raw_spu_create_interrupt_tag),            //150 (0x096)
 	BIND_SYSC(sys_raw_spu_set_int_mask),                    //151 (0x097)
 	BIND_SYSC(sys_raw_spu_get_int_mask),                    //152 (0x098)
@@ -447,9 +447,9 @@ const std::array<std::pair<ppu_intrp_func_t, std::string_view>, 1024> g_ppu_sysc
 	BIND_SYSC(sys_uart_receive),                            //368 (0x170)  ROOT
 	BIND_SYSC(sys_uart_send),                               //369 (0x171)  ROOT
 	BIND_SYSC(sys_uart_get_params),                         //370 (0x172)  ROOT
-	uns_func,                                               //371 (0x173)  UNS
-	BIND_SYSC(_sys_game_watchdog_start),                    //372 (0x174)
-	BIND_SYSC(_sys_game_watchdog_stop),                     //373 (0x175)
+	BIND_SYSC(sys_uart_legacy_initialize),                  //371 (0x173)  0.83 VSH only: uart initialize(port)
+	BIND_SYSC(sys_uart_legacy_receive_or_watchdog_start),   //372 (0x174)  _sys_game_watchdog_start, or uart receive for 0.83 VSH
+	BIND_SYSC(sys_uart_legacy_send_or_watchdog_stop),       //373 (0x175)  _sys_game_watchdog_stop, or uart send for 0.83 VSH
 	BIND_SYSC(_sys_game_watchdog_clear),                    //374 (0x176)
 	BIND_SYSC(_sys_game_set_system_sw_version),             //375 (0x177)  ROOT
 	BIND_SYSC(_sys_game_get_system_sw_version),             //376 (0x178)  ROOT

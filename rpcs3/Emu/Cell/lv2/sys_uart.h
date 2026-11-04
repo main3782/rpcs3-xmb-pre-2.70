@@ -761,3 +761,9 @@ error_code sys_uart_initialize(ppu_thread &ppu);
 error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32 mode);
 error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 mode);
 error_code sys_uart_get_params(vm::ptr<vuart_params> buffer);
+
+// 0.83 VSH uses a different syscall layout for the uart: 371 = initialize(port), 372 = receive(port, buf, size, mode),
+// 373 = send(port, buf, size, mode). 372/373 collide with _sys_game_watchdog_start/stop, so they dispatch on the caller.
+error_code sys_uart_legacy_initialize(ppu_thread &ppu, u64 port);
+error_code sys_uart_legacy_receive_or_watchdog_start(ppu_thread &ppu, u64 arg1, vm::ptr<void> buffer, u64 size, u32 mode);
+error_code sys_uart_legacy_send_or_watchdog_stop(ppu_thread &ppu, u64 arg1, vm::cptr<void> buffer, u64 size, u32 mode);

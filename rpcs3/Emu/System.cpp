@@ -5073,8 +5073,8 @@ bool Emulator::IsVsh()
 	const u64 authority_id = process->self_info.prog_id_hdr.program_authority_id;
 
 	// VSH.self ID. Firmware 2.00 and newer use 0x10700005FF000001, but 1.xx firmware (e.g. 1.80) signs vsh.self (like every other
-	// system SELF of that firmware) with 0x10700003FF000001. Games never use either of them.
-	return authority_id == 0x10700005FF000001ull || authority_id == 0x10700003FF000001ull;
+	// system SELF of that firmware) with 0x10700003FF000001. 0.83 signs its SELFs with 0x1070000400000001. Games never use any of them.
+	return authority_id == 0x10700005FF000001ull || authority_id == 0x10700003FF000001ull || authority_id == 0x1070000400000001ull;
 }
 
 bool Emulator::IsValidSfb(const std::string& path)

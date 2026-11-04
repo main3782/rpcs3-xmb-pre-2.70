@@ -7,6 +7,7 @@
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_rsxaudio.h"
 #include "Emu/Cell/lv2/sys_process.h"
+#include "Emu/Cell/lv2/sys_game.h"
 
 #include "sys_uart.h"
 
@@ -1949,6 +1950,55 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 	return not_an_error(size);
 }
 
+// 0.83 VSH signs its SELFs with this authority ID. Only that firmware uses the shifted uart syscall numbers.
+static bool uart_legacy_abi()
+{
+	return g_ps3_process_info.self_info.valid && g_ps3_process_info.self_info.prog_id_hdr.program_authority_id == 0x1070000400000001ull;
+}
+
+static void uart_legacy_check_port(u64 port)
+{
+	static bool s_logged = false;
+
+	if (port != 0 && !s_logged)
+	{
+		s_logged = true;
+		sys_uart.todo("legacy uart syscall with non-zero port 0x%llx (treated like port 0)", port);
+	}
+}
+
+error_code sys_uart_legacy_initialize(ppu_thread &ppu, u64 port)
+{
+	sys_uart.warning("sys_uart_legacy_initialize(port=0x%llx)", port);
+	uart_legacy_check_port(port);
+
+	return sys_uart_initialize(ppu);
+}
+
+error_code sys_uart_legacy_receive_or_watchdog_start(ppu_thread &ppu, u64 arg1, vm::ptr<void> buffer, u64 size, u32 mode)
+{
+	if (!uart_legacy_abi())
+	{
+		return _sys_game_watchdog_start(static_cast<u32>(arg1));
+	}
+
+	uart_legacy_check_port(arg1);
+
+	return sys_uart_receive(ppu, buffer, size, mode);
+}
+
+error_code sys_uart_legacy_send_or_watchdog_stop(ppu_thread &ppu, u64 arg1, vm::cptr<void> buffer, u64 size, u32 mode)
+{
+	if (!uart_legacy_abi())
+	{
+		return _sys_game_watchdog_stop();
+	}
+
+	uart_legacy_check_port(arg1);
+
+	return sys_uart_send(ppu, buffer, size, mode);
+}
+
 error_code sys_uart_get_params(vm::ptr<vuart_params> buffer)
 {
 	sys_uart.trace("sys_uart_get_params(buffer=0x%x)", buffer);
@@ -2059,9 +2109,9 @@ void vuart_av_thread::parse_tx_buffer(u32 buf_size)
 			return;
 		}
 
-		// 0.85 VSH's libavset speaks protocol version 0x204, 0.84's speaks 0x203. Treat them like 0x205 (the packet sizes are
-		// checked below, so a layout difference shows up as an "Invalid size for cid" error instead of being silently misparsed).
-		if (hdr->version == 0x204 || hdr->version == 0x203)
+		// 0.85 VSH's libavset speaks protocol version 0x204, 0.84's speaks 0x203 and 0.83's 0x202. Treat them like 0x205 (the packet
+		// sizes are checked below, so a layout difference shows up as an "Invalid size for cid" error instead of being silently misparsed).
+		if (hdr->version == 0x204 || hdr->version == 0x203 || hdr->version == 0x202)
 		{
 			// Reply with the client's version from the very first packet on (AV_INIT, which also sets this, is not the first command of a batch)
 			av_cmd_ver = static_cast<u16>(hdr->version);

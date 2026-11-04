@@ -444,6 +444,15 @@ u64 sys_time_get_timebase_frequency()
 	return g_timebase_freq;
 }
 
+// Raw lv2 syscall 149 (0x95). Used by 0.83 VSH (its callers subtract two results to get an elapsed time).
+// The unit (microseconds) is assumed from the sysPrxForUser wrapper of the same name, which returns get_guest_system_time().
+u64 sys_time_get_system_time_lv2()
+{
+	sys_time.trace("sys_time_get_system_time_lv2()");
+
+	return get_guest_system_time();
+}
+
 error_code sys_time_get_rtc(vm::ptr<u64> rtc)
 {
 	sys_time.todo("sys_time_get_rtc(rtc=*0x%x)", rtc);
