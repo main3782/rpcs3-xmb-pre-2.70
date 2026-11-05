@@ -141,6 +141,20 @@ namespace rsx
 		const auto render = get_current_renderer();
 		std::string_view msg;
 
+		// 0.82 VSH's libgcm uses its own context DMA ids 0xcafeXXXX (the third entry of its colour target table is 0xcafe001f)
+		// next to the usual 0xfeed0000/0xfeed0001. What exactly they encode is not known, they are treated as local memory.
+		if ((location & 0xffff0000u) == 0xcafe0000u)
+		{
+			static std::atomic<u32> s_cafe_dma_reports = 0;
+
+			if (s_cafe_dma_reports.fetch_add(1) < 8)
+			{
+				rsx_log.warning("rsx::get_address(): context DMA 0x%x (offset=0x%x) treated as local memory", location, offset);
+			}
+
+			location = CELL_GCM_LOCATION_LOCAL;
+		}
+
 		switch (location)
 		{
 		case CELL_GCM_CONTEXT_DMA_MEMORY_FRAME_BUFFER:
