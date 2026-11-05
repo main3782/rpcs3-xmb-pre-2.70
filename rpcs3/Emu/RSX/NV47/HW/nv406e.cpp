@@ -5,6 +5,7 @@
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/system_config.h"
 #include "Emu/System.h"
+#include "Emu/Cell/lv2/sys_process.h"
 
 #include "context_accessors.define.h"
 
@@ -31,6 +32,14 @@ namespace rsx
 			}
 
 			return dma;
+		}
+
+		// Experiment (0.82 VSH bring-up, a guess): the flip command buffers of 0.82's libgcm wait for label 3 (offset 0x30) to become 0.
+		// Nothing that runs releases it (it is presumably meant for the second context), so every flip would only proceed after the
+		// 1 s acquire timeout. For that firmware (authority ID 0x1070000400000001) the wait is skipped and the label set to the wanted value.
+		static bool vsh_skip_label3_wait(u32 addr, u32 label_addr)
+		{
+			return addr == label_addr + 0x30 && g_ps3_process_info.self_info.valid && g_ps3_process_info.self_info.prog_id_hdr.program_authority_id == 0x1070000400000001ull;
 		}
 
 		void set_reference(context* ctx, u32 /*reg*/, u32 arg)
@@ -74,6 +83,19 @@ namespace rsx
 			else
 			{
 				//RSX(ctx)->flush_fifo();
+			}
+
+			if (vsh_skip_label3_wait(addr, RSX(ctx)->label_addr))
+			{
+				static u32 s_skipped = 0;
+
+				if (s_skipped++ < 4)
+				{
+					rsx_log.warning("VSH: skipping the wait on label 3 (wanted=0x%x, current=0x%x, cmd_pos=0x%x)", arg, static_cast<u32>(sema), RSX(ctx)->last_sema_cmd);
+				}
+
+				*vm::_ptr<RsxSemaphore>(addr) = arg;
+				return;
 			}
 
 			u64 start = get_system_time();
