@@ -1615,7 +1615,7 @@ static bool ppu_prx_has_legacy_relocs(const ppu_prx_object& elf)
 
 	for (const auto& prog : elf.progs)
 	{
-		if (prog.p_type == 0x700000a4 && prog.bin.size() >= 24)
+		if (prog.p_type == 0x700000a4u && prog.bin.size() >= 24)
 		{
 			// The compact format has 0x8000 in the second field of each entry
 			be_t<u16> flag{};
@@ -1667,7 +1667,7 @@ static void ppu_apply_legacy_prx_relocs(const ppu_prx_object& elf, lv2_prx& prx,
 
 		for (const auto& prog : elf.progs)
 		{
-			if (prog.p_type != 0x1)
+			if (prog.p_type != 0x1u)
 			{
 				continue;
 			}

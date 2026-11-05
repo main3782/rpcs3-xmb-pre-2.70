@@ -2109,9 +2109,9 @@ void vuart_av_thread::parse_tx_buffer(u32 buf_size)
 			return;
 		}
 
-		// 0.85 VSH's libavset speaks protocol version 0x204, 0.84's speaks 0x203 and 0.83's 0x202. Treat them like 0x205 (the packet
+		// 0.85 VSH's libavset speaks protocol version 0x204, 0.84's speaks 0x203 and 0.83's 0x202 and 0.82's 0x201. Treat them like 0x205 (the packet
 		// sizes are checked below, so a layout difference shows up as an "Invalid size for cid" error instead of being silently misparsed).
-		if (hdr->version == 0x204 || hdr->version == 0x203 || hdr->version == 0x202)
+		if (hdr->version == 0x204 || hdr->version == 0x203 || hdr->version == 0x202 || hdr->version == 0x201)
 		{
 			// Reply with the client's version from the very first packet on (AV_INIT, which also sets this, is not the first command of a batch)
 			av_cmd_ver = static_cast<u16>(hdr->version);
