@@ -990,6 +990,14 @@ namespace rsx
 			const u32 reg = (command.reg & 0xffff) >> 2;
 			const u32 value = command.value;
 
+			// Diagnostic (0.82 VSH bring-up): trace the first methods the FIFO executes (reg is the method offset divided by 4)
+			static std::atomic<u32> s_fifo_trace{0};
+
+			if (s_fifo_trace.load() < 20000 && Emu.IsVsh() && s_fifo_trace.fetch_add(1) < 20000)
+			{
+				rsx_log.warning("FIFO trace: pos=0x%x reg=0x%x value=0x%x", fifo_ctrl->get_pos(), reg, value);
+			}
+
 			m_ctx->register_state->decode(reg, value);
 
 			if (auto method = methods[reg])

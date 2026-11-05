@@ -104,7 +104,9 @@ namespace rsx
 					if ((current - start) > tdr)
 					{
 						// If longer than driver timeout force exit
-						rsx_log.error("nv406e::semaphore_acquire has timed out. semaphore_address=0x%X", addr);
+						rsx_log.error("nv406e::semaphore_acquire has timed out. semaphore_address=0x%X, wanted=0x%x, current=0x%x, cmd_pos=0x%x, label[0..3]=0x%x 0x%x 0x%x 0x%x", addr, arg, static_cast<u32>(sema), RSX(ctx)->last_sema_cmd,
+							static_cast<u32>(vm::_ref<RsxSemaphore>(RSX(ctx)->label_addr + 0x00)), static_cast<u32>(vm::_ref<RsxSemaphore>(RSX(ctx)->label_addr + 0x10)),
+							static_cast<u32>(vm::_ref<RsxSemaphore>(RSX(ctx)->label_addr + 0x20)), static_cast<u32>(vm::_ref<RsxSemaphore>(RSX(ctx)->label_addr + 0x30)));
 						break;
 					}
 				}
