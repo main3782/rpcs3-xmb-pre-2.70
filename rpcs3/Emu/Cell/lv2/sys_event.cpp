@@ -940,7 +940,9 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 //   Each client connection (op 0x01) gets its own session id (0x200, 0x400, ...) which later requests carry in d1.
 // Only after all of them succeeded does the client set its "initialized" flag (otherwise it returns
 // CELL_AUDIO_ERROR_NOT_INIT, which paf then stores and uses to skip display setup).
-static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
+// legacy_client: the request came in on the IPC key of 0.84/0.85 (0x12340098). Only those clients get the special handling of
+// the ops 0x03/0x05 and the one-way ops. The 2.xx client (key 0x8000cafe0246fab4) gets the generic answers it always got.
+static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3, bool legacy_client)
 {
 	static atomic_t<u32> s_log_count = 0;
 	static atomic_t<u32> s_session_count = 0;
@@ -983,7 +985,7 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 	// 0.84's client sends these with a send-only helper and never reads a reply (the round-trip helper receives with a 400 ms timeout
 	// and then checks the reply opcode). Answering them leaves a stale message in the shared reply queue, which the next real request
 	// reads instead of its own reply, fails the opcode check and aborts cellSurMixerStart() with 0x80310702.
-	if (op == 0x0b || op == 0x0e || op == 0x0f || op == 0x12 || op == 0x1f)
+	if (legacy_client && (op == 0x0b || op == 0x0e || op == 0x0f || op == 0x12 || op == 0x1f))
 	{
 		if (do_log)
 		{
@@ -997,7 +999,10 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3)
 	u64 r2 = 0;
 	u64 r3 = 0;
 
-	switch (op)
+	// Ops 0x03 and 0x05 are only special for the 0.84/0.85 client, everything else falls through to the generic answer (switch value not in the table)
+	const u32 switch_op = (!legacy_client && (op == 0x03 || op == 0x05)) ? 0x1fe : op;
+
+	switch (switch_op)
 	{
 	case 0x01: reply_op = 0x02; r2 = session; break;
 	case 0x30: reply_op = 0x30; r2 = 0x5a5a5; break;
@@ -1094,7 +1099,7 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 			if ((port.queue->key == s_vsh_audio_ipc_key || port.queue->key == s_vsh_audio_ipc_key_legacy) && Emu.IsVsh())
 			{
 				// Fake audio server answers instead of enqueueing into the placeholder queue
-				vsh_audio_server_request(data1, data2, data3);
+				vsh_audio_server_request(data1, data2, data3, port.queue->key == s_vsh_audio_ipc_key_legacy);
 				return {};
 			}
 
