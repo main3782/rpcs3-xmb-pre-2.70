@@ -16,6 +16,7 @@
 #include "sys_fs.h"
 #include "sys_process.h"
 #include "sys_memory.h"
+#include "sys_ppu_thread.h"
 #include <span>
 
 extern void dump_executable(std::span<const u8> data, const ppu_module<lv2_obj>* _module, std::string_view title_id);
@@ -635,6 +636,98 @@ error_code _sys_prx_start_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys
 	}
 
 	return CELL_OK;
+}
+
+// Experimental (2.17 audio). Firmware up to 2.17 runs its audio server as a separate process (sys_audio.self), which cannot be spawned here.
+// 2.20 and newer load the same server as a module (sys_audio.sprx) from VSH itself, and 2.17 ships that module as well. This loads it
+// like _sys_prx_load_module and the first half of _sys_prx_start_module would, then runs its start function on a thread of its own.
+// Returns true when the module is loaded and was started now or earlier, false when that failed.
+bool vsh_start_audio_module(ppu_thread& ppu)
+{
+	ppu.state += cpu_flag::wait;
+
+	bool already_loaded = false;
+
+	idm::select<lv2_obj, lv2_prx>([&](u32, lv2_prx& loaded)
+	{
+		if (loaded.name == "sys_audio.sprx")
+		{
+			already_loaded = true;
+		}
+	});
+
+	if (already_loaded)
+	{
+		return true;
+	}
+
+	const std::string vpath = "/dev_flash/sys/internal/sys_audio.sprx";
+
+	if (!fs::is_file(vfs::get(vpath)))
+	{
+		sys_prx.error("vsh_start_audio_module(): '%s' does not exist", vpath);
+		return false;
+	}
+
+	const s32 id = static_cast<s32>(prx_load_module(vpath, 0, vm::null));
+
+	if (id <= 0)
+	{
+		sys_prx.error("vsh_start_audio_module(): loading '%s' failed (0x%x)", vpath, id);
+		return false;
+	}
+
+	const auto prx = idm::get_unlocked<lv2_obj, lv2_prx>(static_cast<u32>(id));
+
+	if (!prx || !prx->start)
+	{
+		sys_prx.error("vsh_start_audio_module(): '%s' has no start function", vpath);
+		return false;
+	}
+
+	{
+		std::lock_guard lock(prx->mutex);
+
+		if (!prx->state.compare_and_swap_test(PRX_STATE_INITIALIZED, PRX_STATE_STARTING))
+		{
+			return false;
+		}
+
+		prx->load_exports();
+	}
+
+	// The module has no TLS segment, the thread only needs a zeroed TLS area for r13
+	const u32 tls = vm::alloc(0x8000, vm::main);
+
+	if (!tls)
+	{
+		return false;
+	}
+
+	std::memset(vm::base(tls), 0, 0x8000);
+
+	vm::var<u64, vm::page_allocator<>> thread_id;
+	vm::var<ppu_thread_param_t, vm::page_allocator<>> param;
+
+	param->entry.set(prx->start.addr());
+	param->tls = tls;
+
+	sys_prx.warning("vsh_start_audio_module(): starting '%s' (id=0x%x, start=*0x%x)", vpath, id, prx->start.addr());
+
+	if (static_cast<s32>(_sys_ppu_thread_create(ppu, thread_id, param, 0, 0, 1000, 0x20000, 0, vm::null)) < 0)
+	{
+		sys_prx.error("vsh_start_audio_module(): creating the start thread failed");
+		return false;
+	}
+
+	if (static_cast<s32>(sys_ppu_thread_start(ppu, static_cast<u32>(*thread_id))) < 0)
+	{
+		sys_prx.error("vsh_start_audio_module(): starting the start thread failed");
+		return false;
+	}
+
+	prx->state = PRX_STATE_STARTED;
+	return true;
 }
 
 error_code _sys_prx_stop_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_prx_start_stop_module_option_t> pOpt)

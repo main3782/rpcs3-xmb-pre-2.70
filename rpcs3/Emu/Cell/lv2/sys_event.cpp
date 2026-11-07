@@ -132,6 +132,16 @@ static constexpr u64 s_vsh_audio_ipc_key = 0x8000cafe0246fab4;
 // Firmware 0.85 (and presumably older) reaches the audio server through a different, much simpler key, but speaks the same request protocol
 static constexpr u64 s_vsh_audio_ipc_key_legacy = 0x12340098;
 
+extern void lv2_sleep(u64 timeout, ppu_thread* ppu);
+extern bool vsh_start_audio_module(ppu_thread& ppu); // sys_prx.cpp
+
+// Experimental: with an (empty) file vsh_real_audio.txt in the emulator directory, firmware that waits for a separate audio server
+// process (2.17) gets the real server from its sys_audio.sprx instead of the placeholder queue and the fake server.
+static bool vsh_real_audio_requested()
+{
+	return fs::is_file(fs::get_config_dir() + "vsh_real_audio.txt");
+}
+
 // Name of the placeholder queue that stands in for a missing audio server. Firmware that runs sys_audio.self inside the emulated
 // process (2.20 and newer) creates the real queue with the same ipc key, and its requests must reach that real queue.
 static constexpr u64 s_vsh_audio_placeholder_name = 0x4641'4b45'5f41'5544ull; // "FAKE_AUD"
@@ -854,6 +864,26 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 	}
 
 	auto queue = lv2_event_queue::find(ipc_key);
+
+	if (!queue && ipc_key == s_vsh_audio_ipc_key && Emu.IsVsh() && vsh_real_audio_requested())
+	{
+		if (vsh_start_audio_module(ppu))
+		{
+			// Wait (up to 5 s) for the module to create its server queue, otherwise fall back to the placeholder below
+			for (u32 i = 0; i < 100 && !queue; i++)
+			{
+				lv2_sleep(50'000, &ppu);
+
+				if (ppu.is_stopped())
+				{
+					ppu.state += cpu_flag::again;
+					return {};
+				}
+
+				queue = lv2_event_queue::find(ipc_key);
+			}
+		}
+	}
 
 	// Older firmware (e.g. 2.17) runs sys_audio.self as a separate process that owns this queue,
 	// and vshmw polls it forever ("waiting for audio server process ready") until it exists.
