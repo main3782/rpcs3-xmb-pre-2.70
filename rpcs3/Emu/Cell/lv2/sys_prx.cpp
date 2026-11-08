@@ -16,6 +16,7 @@
 #include "sys_fs.h"
 #include "sys_process.h"
 #include "sys_memory.h"
+#include "Emu/Memory/vm_var.h"
 #include "sys_ppu_thread.h"
 #include <span>
 
