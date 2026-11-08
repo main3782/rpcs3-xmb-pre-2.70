@@ -818,7 +818,14 @@ error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_i
 		// filled by a sys_mmapper_allocate_address call that never happened here, so it passes 0. Provide the area it would have got.
 		// VSH can restart inside the same RPCS3 session (e.g. after a format), which resets the guest memory map, so a cached area
 		// address must be checked to still exist before it is reused.
-		static atomic_t<u32> s_vsh_area = 0;
+		// The area must have the page size the memory object needs: sys_audio.sprx (2.17) maps a 64 KB aligned shared memory,
+		// the vshmw client one that needs 1 MB pages. A 1 MB page area makes the first fail with CELL_EALIGN.
+		const auto mem_obj = idm::get_unlocked<lv2_obj, lv2_memory>(mem_id);
+		const bool use_64k = mem_obj && mem_obj->align < 0x100000;
+
+		static atomic_t<u32> s_vsh_area_1m = 0;
+		static atomic_t<u32> s_vsh_area_64k = 0;
+		atomic_t<u32>& s_vsh_area = use_64k ? s_vsh_area_64k : s_vsh_area_1m;
 
 		u32 area_addr = s_vsh_area;
 
@@ -834,7 +841,7 @@ error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_i
 
 		if (!area_addr)
 		{
-			if (const auto new_area = vm::find_map(0x10000000, 0x10000000, vm::mapping_comp | SYS_MEMORY_PAGE_SIZE_1M))
+			if (const auto new_area = vm::find_map(0x10000000, 0x10000000, vm::mapping_comp | (use_64k ? SYS_MEMORY_PAGE_SIZE_64K : SYS_MEMORY_PAGE_SIZE_1M)))
 			{
 				area_addr = new_area->addr;
 				s_vsh_area = area_addr;
