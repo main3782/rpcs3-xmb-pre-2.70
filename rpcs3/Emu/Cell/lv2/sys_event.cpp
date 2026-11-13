@@ -135,11 +135,12 @@ static constexpr u64 s_vsh_audio_ipc_key_legacy = 0x12340098;
 extern void lv2_sleep(u64 timeout, ppu_thread* ppu);
 extern bool vsh_start_audio_module(ppu_thread& ppu); // sys_prx.cpp
 
-// Experimental: with an (empty) file vsh_real_audio.txt in the emulator directory, firmware that waits for a separate audio server
-// process (2.17) gets the real server from its sys_audio.sprx instead of the placeholder queue and the fake server.
+// Firmware that waits for a separate audio server process (2.17 and older) gets the real server from a sys_audio.sprx instead of
+// the placeholder queue and the fake server, when one can be found (dev_flash/sys/internal or vsh_audio/ next to the emulator).
+// An (empty) file vsh_fake_audio.txt in the emulator directory turns this off.
 static bool vsh_real_audio_requested()
 {
-	return fs::is_file(fs::get_config_dir() + "vsh_real_audio.txt");
+	return !fs::is_file(fs::get_config_dir() + "vsh_fake_audio.txt");
 }
 
 // Name of the placeholder queue that stands in for a missing audio server. Firmware that runs sys_audio.self inside the emulated

@@ -664,13 +664,36 @@ bool vsh_start_audio_module(ppu_thread& ppu)
 
 	const std::string vpath = "/dev_flash/sys/internal/sys_audio.sprx";
 
+	fs::file src;
+
 	if (!fs::is_file(vfs::get(vpath)))
 	{
-		sys_prx.error("vsh_start_audio_module(): '%s' does not exist", vpath);
-		return false;
+		// 2.00 and older ship the server only as sys_audio.self. A copy of the module of a newer firmware (2.17 works for 2.00)
+		// can be placed in vsh_audio/sys_audio.sprx next to the emulator, or in the parent folder to share it between installs.
+		const std::string dir = fs::get_config_dir();
+		const std::string candidates[] = { dir + "vsh_audio/sys_audio.sprx", dir + "../vsh_audio/sys_audio.sprx" };
+
+		std::string used;
+
+		for (const std::string& candidate : candidates)
+		{
+			if (src.open(candidate))
+			{
+				used = candidate;
+				break;
+			}
+		}
+
+		if (used.empty())
+		{
+			sys_prx.warning("vsh_start_audio_module(): '%s', '%s' and '%s' do not exist", vpath, candidates[0], candidates[1]);
+			return false;
+		}
+
+		sys_prx.warning("vsh_start_audio_module(): '%s' does not exist, using '%s'", vpath, used);
 	}
 
-	const s32 id = static_cast<s32>(prx_load_module(vpath, 0, vm::null));
+	const s32 id = static_cast<s32>(prx_load_module(vpath, 0, vm::null, std::move(src)));
 
 	if (id <= 0)
 	{
