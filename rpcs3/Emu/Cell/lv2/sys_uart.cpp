@@ -2337,6 +2337,8 @@ void vuart_av_thread::commit_rx_buf(bool syscon_buf)
 
 void vuart_av_thread::add_hdmi_events(UartHdmiEvent first_event, UartHdmiEvent last_event, bool hdmi_0, bool hdmi_1)
 {
+	sys_uart.notice("VSH diag: add_hdmi_events first=%u last=%u hdmi_0=%d hdmi_1=%d event_mask=0x%x", static_cast<u32>(first_event), static_cast<u32>(last_event), hdmi_0 ? 1 : 0, hdmi_1 ? 1 : 0, static_cast<u32>(hdmi_events_bitmask));
+
 	if (hdmi_0)
 	{
 		hdmi_event_handler[0].set_target_state(first_event, last_event);
@@ -2355,6 +2357,8 @@ void vuart_av_thread::add_hdmi_events(UartHdmiEvent last_event, bool hdmi_0, boo
 
 void vuart_av_thread::dispatch_hdmi_event(UartHdmiEvent event, UartAudioAvport hdmi)
 {
+	sys_uart.notice("VSH diag: dispatch_hdmi_event event=%u hdmi=%u event_mask=0x%x", static_cast<u32>(event), static_cast<u32>(hdmi), static_cast<u32>(hdmi_events_bitmask));
+
 	const bool hdmi_0 = hdmi == UartAudioAvport::HDMI_0;
 	const bool hdmi_1 = hdmi == UartAudioAvport::HDMI_1;
 
@@ -2508,6 +2512,8 @@ void vuart_av_thread::add_hdcp_done_event(bool hdmi_0, bool hdmi_1)
 
 void vuart_av_thread::commit_event_data(const void *data, u16 data_size)
 {
+	sys_uart.notice("VSH diag: AV event committed cid=0x%08x size=0x%x", static_cast<const ps3av_header*>(data)->cid, data_size);
+
 	std::unique_lock<shared_mutex> lock(rx_wake_m);
 	rx_buf.push(data, data_size, true);
 
