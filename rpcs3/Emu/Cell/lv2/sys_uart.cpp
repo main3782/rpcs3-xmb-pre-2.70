@@ -1802,19 +1802,6 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 		return CELL_EFAULT;
 	}
 
-	{
-		// Diagnostic: what VSH reads from the AV link (first 150 reads)
-		static atomic_t<u32> s_rx_diag_count{0};
-
-		if (s_rx_diag_count.fetch_add(1) < 150u)
-		{
-			const auto name = ppu.ppu_tname.load();
-			const u8* d = data.get();
-			sys_uart.warning("VSH diag: sys_uart_receive by '%s' req_size=0x%llx mode=0x%x got=0x%x first=%02x %02x %02x %02x %02x %02x %02x %02x", name ? *name : std::string("?"), size, mode, read_size,
-				read_size > 0 ? d[0] : 0, read_size > 1 ? d[1] : 0, read_size > 2 ? d[2] : 0, read_size > 3 ? d[3] : 0, read_size > 4 ? d[4] : 0, read_size > 5 ? d[5] : 0, read_size > 6 ? d[6] : 0, read_size > 7 ? d[7] : 0);
-		}
-	}
-
 	memcpy(buffer.get_ptr(), data.get(), read_size);
 	return not_an_error(read_size);
 }
@@ -2261,9 +2248,6 @@ void vuart_av_thread::write_resp(u32 cid, u32 status, const void *data, u16 data
 		sys_uart.error("Packet failed cid=0x%08x status=0x%02x", cid, status);
 	}
 
-	// Diagnostic: log every AV reply (which buffer, status, data size)
-	sys_uart.notice("VSH diag: AV reply cid=0x%08x status=0x%02x data_size=0x%x ver=0x%04x sc_buf=%d", cid, status, data_size, reply_version, UseScBuffer ? 1 : 0);
-
 	temp_buf &buf = UseScBuffer ? temp_rx_sc_buf : temp_rx_buf;
 	const u32 total_size = sizeof(pkt_hdr) + data_size;
 
@@ -2332,11 +2316,6 @@ void vuart_av_thread::commit_rx_buf(bool syscon_buf)
 {
 	temp_buf &buf = syscon_buf ? temp_rx_sc_buf : temp_rx_buf;
 
-	if (buf.crnt_size)
-	{
-		sys_uart.notice("VSH diag: AV commit_rx_buf sc_buf=%d bytes=0x%x", syscon_buf ? 1 : 0, buf.crnt_size);
-	}
-
 	std::unique_lock<shared_mutex> lock(rx_wake_m);
 	rx_buf.push(buf.buf, buf.crnt_size, true);
 	buf.crnt_size = 0;
@@ -2350,8 +2329,6 @@ void vuart_av_thread::commit_rx_buf(bool syscon_buf)
 
 void vuart_av_thread::add_hdmi_events(UartHdmiEvent first_event, UartHdmiEvent last_event, bool hdmi_0, bool hdmi_1)
 {
-	sys_uart.notice("VSH diag: add_hdmi_events first=%u last=%u hdmi_0=%d hdmi_1=%d event_mask=0x%x", static_cast<u32>(first_event), static_cast<u32>(last_event), hdmi_0 ? 1 : 0, hdmi_1 ? 1 : 0, static_cast<u32>(hdmi_events_bitmask));
-
 	if (hdmi_0)
 	{
 		hdmi_event_handler[0].set_target_state(first_event, last_event);
@@ -2370,11 +2347,6 @@ void vuart_av_thread::add_hdmi_events(UartHdmiEvent last_event, bool hdmi_0, boo
 
 void vuart_av_thread::dispatch_hdmi_event(UartHdmiEvent event, UartAudioAvport hdmi)
 {
-	if (event != UartHdmiEvent::NONE)
-	{
-		sys_uart.notice("VSH diag: dispatch_hdmi_event event=%u hdmi=%u event_mask=0x%x", static_cast<u32>(event), static_cast<u32>(hdmi), static_cast<u32>(hdmi_events_bitmask));
-	}
-
 	const bool hdmi_0 = hdmi == UartAudioAvport::HDMI_0;
 	const bool hdmi_1 = hdmi == UartAudioAvport::HDMI_1;
 
@@ -2528,8 +2500,6 @@ void vuart_av_thread::add_hdcp_done_event(bool hdmi_0, bool hdmi_1)
 
 void vuart_av_thread::commit_event_data(const void *data, u16 data_size)
 {
-	sys_uart.notice("VSH diag: AV event committed cid=0x%08x size=0x%x", static_cast<const ps3av_header*>(data)->cid, data_size);
-
 	std::unique_lock<shared_mutex> lock(rx_wake_m);
 	rx_buf.push(data, data_size, true);
 
