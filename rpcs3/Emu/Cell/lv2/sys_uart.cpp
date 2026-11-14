@@ -2370,7 +2370,10 @@ void vuart_av_thread::add_hdmi_events(UartHdmiEvent last_event, bool hdmi_0, boo
 
 void vuart_av_thread::dispatch_hdmi_event(UartHdmiEvent event, UartAudioAvport hdmi)
 {
-	sys_uart.notice("VSH diag: dispatch_hdmi_event event=%u hdmi=%u event_mask=0x%x", static_cast<u32>(event), static_cast<u32>(hdmi), static_cast<u32>(hdmi_events_bitmask));
+	if (event != UartHdmiEvent::NONE)
+	{
+		sys_uart.notice("VSH diag: dispatch_hdmi_event event=%u hdmi=%u event_mask=0x%x", static_cast<u32>(event), static_cast<u32>(hdmi), static_cast<u32>(hdmi_events_bitmask));
+	}
 
 	const bool hdmi_0 = hdmi == UartAudioAvport::HDMI_0;
 	const bool hdmi_1 = hdmi == UartAudioAvport::HDMI_1;
