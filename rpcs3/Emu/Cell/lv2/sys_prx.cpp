@@ -643,9 +643,14 @@ error_code _sys_prx_start_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys
 // 2.20 and newer load the same server as a module (sys_audio.sprx) from VSH itself, and 2.17 ships that module as well. This loads it
 // like _sys_prx_load_module and the first half of _sys_prx_start_module would, then runs its start function on a thread of its own.
 // Returns true when the module is loaded and was started now or earlier, false when that failed.
+// Set once the real sys_audio.sprx has been started inside VSH (read by sys_mmapper.cpp)
+atomic_t<bool> g_vsh_real_audio_started{false};
+
 bool vsh_start_audio_module(ppu_thread& ppu)
 {
 	ppu.state += cpu_flag::wait;
+
+	g_vsh_real_audio_started = false;
 
 	bool already_loaded = false;
 
@@ -751,6 +756,7 @@ bool vsh_start_audio_module(ppu_thread& ppu)
 	}
 
 	prx->state = PRX_STATE_STARTED;
+	g_vsh_real_audio_started = true;
 	return true;
 }
 

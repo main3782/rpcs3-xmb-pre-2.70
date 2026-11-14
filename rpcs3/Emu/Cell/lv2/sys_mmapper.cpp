@@ -16,6 +16,8 @@
 
 LOG_CHANNEL(sys_mmapper);
 
+extern atomic_t<bool> g_vsh_real_audio_started; // sys_prx.cpp
+
 void init_system_shared_memory()
 {
 	for (u64 key : {SYS_MMAPPER_SYSUTIL_SHM_KEY, SYS_MMAPPER_MIO_SHM_KEY})
@@ -106,7 +108,8 @@ CellError lv2_memory::on_id_create(u64 requested_size, u32 requested_align, cons
 	// The VSH audio server (sys_audio.sprx running inside VSH) creates its shared memory
 	// (keys 0x8000cafe0246xxxx) and the VSH main thread then opens the same key by handle.
 	// Allow that extra handle instead of failing with CELL_EEXIST.
-	const bool vsh_audio_shm = (key >> 16) == 0x8000cafe0246;
+	// Only when the real server module runs inside VSH, so the fake-audio path and games are unaffected.
+	const bool vsh_audio_shm = (key >> 16) == 0x8000cafe0246 && g_vsh_real_audio_started && Emu.IsVsh();
 
 	if (exists > (system_handle ? 1u : 0u) && !vsh_audio_shm)
 	{
