@@ -1825,6 +1825,17 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 		return CELL_EINVAL;
 	}
 
+	{
+		// Diagnostic: which thread sends AV packets (first 100 sends only)
+		static atomic_t<u32> s_diag_count{0};
+
+		if (s_diag_count.fetch_add(1) < 100u)
+		{
+			const auto name = ppu.ppu_tname.load();
+			sys_uart.warning("VSH diag: sys_uart_send by '%s' size=0x%llx mode=0x%x", name ? *name : std::string("?"), size, mode);
+		}
+	}
+
 	auto &vuart_thread = g_fxo->get<vuart_av>();
 
 	if (!vuart_thread.initialized)

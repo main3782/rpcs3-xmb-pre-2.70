@@ -294,7 +294,7 @@ error_code sys_rsxaudio_unimport_shared_memory(ppu_thread& ppu, u32 handle, vm::
 
 error_code sys_rsxaudio_create_connection(u32 handle)
 {
-	sys_rsxaudio.trace("sys_rsxaudio_create_connection(handle=0x%x)", handle);
+	sys_rsxaudio.warning("VSH diag: sys_rsxaudio_create_connection(handle=0x%x)", handle);
 
 	const auto rsxaudio_obj = idm::get_unlocked<lv2_obj, lv2_rsxaudio>(handle);
 
@@ -336,6 +336,7 @@ error_code sys_rsxaudio_create_connection(u32 handle)
 
 	if (port_create_status != CELL_OK)
 	{
+		sys_rsxaudio.warning("VSH diag: sys_rsxaudio_create_connection failed: event queue ids in shared page not found (q1=0x%x, q2=0x%x, q3=0x%x)", sh_page->ctrl.event_queue_1_id, sh_page->ctrl.event_queue_2_id, sh_page->ctrl.event_queue_3_id);
 		return port_create_status;
 	}
 
@@ -357,7 +358,7 @@ error_code sys_rsxaudio_create_connection(u32 handle)
 
 error_code sys_rsxaudio_close_connection(u32 handle)
 {
-	sys_rsxaudio.trace("sys_rsxaudio_close_connection(handle=0x%x)", handle);
+	sys_rsxaudio.warning("VSH diag: sys_rsxaudio_close_connection(handle=0x%x)", handle);
 
 	const auto rsxaudio_obj = idm::get_unlocked<lv2_obj, lv2_rsxaudio>(handle);
 
@@ -389,7 +390,7 @@ error_code sys_rsxaudio_close_connection(u32 handle)
 
 error_code sys_rsxaudio_prepare_process(u32 handle)
 {
-	sys_rsxaudio.trace("sys_rsxaudio_prepare_process(handle=0x%x)", handle);
+	sys_rsxaudio.warning("VSH diag: sys_rsxaudio_prepare_process(handle=0x%x)", handle);
 
 	const auto rsxaudio_obj = idm::get_unlocked<lv2_obj, lv2_rsxaudio>(handle);
 
@@ -410,6 +411,7 @@ error_code sys_rsxaudio_prepare_process(u32 handle)
 
 	if (rsxaudio_thread.rsxaudio_obj_ptr)
 	{
+		sys_rsxaudio.warning("VSH diag: sys_rsxaudio_prepare_process failed: a process is already prepared (returning -1)");
 		return -1;
 	}
 
@@ -420,7 +422,7 @@ error_code sys_rsxaudio_prepare_process(u32 handle)
 
 error_code sys_rsxaudio_start_process(u32 handle)
 {
-	sys_rsxaudio.trace("sys_rsxaudio_start_process(handle=0x%x)", handle);
+	sys_rsxaudio.warning("VSH diag: sys_rsxaudio_start_process(handle=0x%x)", handle);
 
 	const auto rsxaudio_obj = idm::get_unlocked<lv2_obj, lv2_rsxaudio>(handle);
 
@@ -461,6 +463,7 @@ error_code sys_rsxaudio_start_process(u32 handle)
 	{
 		if (const auto& queue = rsxaudio_obj->event_queue[q_idx]; queue && sh_page->ctrl.ringbuf[q_idx].active)
 		{
+			sys_rsxaudio.warning("VSH diag: sys_rsxaudio_start_process sending first event to port %u", q_idx);
 			queue->send(rsxaudio_obj->event_port_name[q_idx], q_idx, 0, 0);
 		}
 	}
@@ -470,7 +473,7 @@ error_code sys_rsxaudio_start_process(u32 handle)
 
 error_code sys_rsxaudio_stop_process(u32 handle)
 {
-	sys_rsxaudio.trace("sys_rsxaudio_stop_process(handle=0x%x)", handle);
+	sys_rsxaudio.warning("VSH diag: sys_rsxaudio_stop_process(handle=0x%x)", handle);
 
 	const auto rsxaudio_obj = idm::get_unlocked<lv2_obj, lv2_rsxaudio>(handle);
 
