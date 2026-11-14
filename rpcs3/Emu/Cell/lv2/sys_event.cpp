@@ -241,7 +241,7 @@ static void event_diag_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 
 	const u32 count = ++it->second;
 
-	if (count <= 3u || count % 500u == 0u)
+	if (count <= 40u || count % 500u == 0u)
 	{
 		sys_event.warning("VSH diag: port_send #%u eport_id=0x%x data1=0x%llx data2=0x%llx data3=0x%llx by '%s': %s", count, eport_id, data1, data2, data3, name, event_caller_trace());
 	}
