@@ -2248,6 +2248,9 @@ void vuart_av_thread::write_resp(u32 cid, u32 status, const void *data, u16 data
 		sys_uart.error("Packet failed cid=0x%08x status=0x%02x", cid, status);
 	}
 
+	// Diagnostic: log every AV reply (which buffer, status, data size)
+	sys_uart.notice("VSH diag: AV reply cid=0x%08x status=0x%02x data_size=0x%x ver=0x%04x sc_buf=%d", cid, status, data_size, reply_version, UseScBuffer ? 1 : 0);
+
 	temp_buf &buf = UseScBuffer ? temp_rx_sc_buf : temp_rx_buf;
 	const u32 total_size = sizeof(pkt_hdr) + data_size;
 
@@ -2315,6 +2318,11 @@ std::shared_ptr<ps3av_cmd> vuart_av_thread::get_cmd(u32 cid)
 void vuart_av_thread::commit_rx_buf(bool syscon_buf)
 {
 	temp_buf &buf = syscon_buf ? temp_rx_sc_buf : temp_rx_buf;
+
+	if (buf.crnt_size)
+	{
+		sys_uart.notice("VSH diag: AV commit_rx_buf sc_buf=%d bytes=0x%x", syscon_buf ? 1 : 0, buf.crnt_size);
+	}
 
 	std::unique_lock<shared_mutex> lock(rx_wake_m);
 	rx_buf.push(buf.buf, buf.crnt_size, true);
