@@ -453,6 +453,16 @@ error_code sys_timer_usleep(ppu_thread& ppu, u64 sleep_time)
 
 	sys_timer.trace("sys_timer_usleep(sleep_time=0x%llx)", sleep_time);
 
+	if (Emu.IsVsh() && sleep_time >= 100000)
+	{
+		const auto name = ppu.ppu_tname.load();
+
+		if (name && (*name == "main_thread" || *name == "_libavset_recv_data_handler"))
+		{
+			sys_timer.warning("VSH diag: sys_timer_usleep by '%s' sleep_time=0x%llx", *name, sleep_time);
+		}
+	}
+
 	if (sleep_time)
 	{
 		const s64 add_time = g_cfg.core.usleep_addend;

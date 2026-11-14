@@ -208,6 +208,21 @@ static void event_diag_receive(u32 equeue_id, u64 timeout)
 
 	std::lock_guard lock(s_mutex);
 
+	// Log every receive of the AV related threads (capped), so we can see what they block on
+	if (name == "main_thread" || name == "_libavset_recv_data_handler")
+	{
+		static u32 s_every_main = 0;
+		static u32 s_every_avset = 0;
+		u32& cnt = name == "main_thread" ? s_every_main : s_every_avset;
+
+		if (cnt < 400u)
+		{
+			cnt++;
+			sys_event.warning("VSH diag: [every] queue_receive thread='%s' #%u equeue_id=0x%x timeout=0x%llx: %s", name, cnt, equeue_id, timeout, event_caller_trace());
+			return;
+		}
+	}
+
 	if (s_seen.size() >= 200u || !s_seen.emplace(name, equeue_id).second)
 	{
 		return;
