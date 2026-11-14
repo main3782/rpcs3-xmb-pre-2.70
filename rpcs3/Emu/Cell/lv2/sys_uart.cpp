@@ -1802,6 +1802,19 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 		return CELL_EFAULT;
 	}
 
+	{
+		// Diagnostic: what VSH reads from the AV link (first 150 reads)
+		static atomic_t<u32> s_rx_diag_count{0};
+
+		if (s_rx_diag_count.fetch_add(1) < 150u)
+		{
+			const auto name = ppu.ppu_tname.load();
+			const u8* d = data.get();
+			sys_uart.warning("VSH diag: sys_uart_receive by '%s' req_size=0x%llx mode=0x%x got=0x%x first=%02x %02x %02x %02x %02x %02x %02x %02x", name ? *name : std::string("?"), size, mode, read_size,
+				read_size > 0 ? d[0] : 0, read_size > 1 ? d[1] : 0, read_size > 2 ? d[2] : 0, read_size > 3 ? d[3] : 0, read_size > 4 ? d[4] : 0, read_size > 5 ? d[5] : 0, read_size > 6 ? d[6] : 0, read_size > 7 ? d[7] : 0);
+		}
+	}
+
 	memcpy(buffer.get_ptr(), data.get(), read_size);
 	return not_an_error(read_size);
 }
