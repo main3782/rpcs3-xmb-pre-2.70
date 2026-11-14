@@ -103,7 +103,12 @@ CellError lv2_memory::on_id_create(u64 requested_size, u32 requested_align, cons
 		return CELL_EPERM;
 	}
 
-	if (exists > (system_handle ? 1u : 0u))
+	// The VSH audio server (sys_audio.sprx running inside VSH) creates its shared memory
+	// (keys 0x8000cafe0246xxxx) and the VSH main thread then opens the same key by handle.
+	// Allow that extra handle instead of failing with CELL_EEXIST.
+	const bool vsh_audio_shm = (key >> 16) == 0x8000cafe0246;
+
+	if (exists > (system_handle ? 1u : 0u) && !vsh_audio_shm)
 	{
 		return CELL_EEXIST;
 	}
