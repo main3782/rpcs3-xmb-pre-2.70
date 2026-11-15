@@ -1376,7 +1376,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 					{
 						for (u32 i = 0; i < 8u && !nonempty; i++)
 						{
-							nonempty = *vm::_ptr<u32>(addr + i * (block_size / 8u)) != 0;
+							nonempty = static_cast<u32>(*vm::_ptr<u32>(addr + i * (block_size / 8u))) != 0u;
 						}
 					}
 
