@@ -1338,6 +1338,67 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 					}
 				}
 			}
+
+			// VSH diag (black screen on 0.90): where in RSX local memory is there any picture data at all?
+			// Every ~2 s, sample each 64 KB block of the 256 MB video memory and report the non-empty ranges.
+			if (diag_n % 120u == 0u && diag_n < 4800u)
+			{
+				constexpr u32 block_size = 0x10000;
+				constexpr u32 block_count = 0x10000000 / block_size;
+
+				std::string ranges;
+				u32 range_start = umax;
+				u32 nonempty_blocks = 0;
+				u32 range_count = 0;
+
+				const auto flush_range = [&](u32 end_block)
+				{
+					if (range_start == umax)
+					{
+						return;
+					}
+
+					if (range_count < 12u)
+					{
+						fmt::append(ranges, " [0x%x-0x%x)", range_start * block_size, end_block * block_size);
+					}
+
+					range_count++;
+					range_start = umax;
+				};
+
+				for (u32 blk = 0; blk < block_count; blk++)
+				{
+					const u32 addr = rsx::constants::local_mem_base + blk * block_size;
+					bool nonempty = false;
+
+					if (vm::check_addr(addr, vm::page_readable, block_size))
+					{
+						for (u32 i = 0; i < 8u && !nonempty; i++)
+						{
+							nonempty = *vm::_ptr<u32>(addr + i * (block_size / 8u)) != 0;
+						}
+					}
+
+					if (nonempty)
+					{
+						nonempty_blocks++;
+
+						if (range_start == umax)
+						{
+							range_start = blk;
+						}
+					}
+					else
+					{
+						flush_range(blk);
+					}
+				}
+
+				flush_range(block_count);
+
+				sys_rsx.warning("VSH diag: video memory non-empty 64KB blocks=%u ranges=%u:%s (flip #%u)", nonempty_blocks, range_count, ranges, diag_n);
+			}
 		}
 
 		render->send_event(0, SYS_RSX_EVENT_FLIP_BASE << 1, 0);
