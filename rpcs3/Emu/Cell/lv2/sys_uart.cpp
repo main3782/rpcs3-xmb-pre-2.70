@@ -679,9 +679,8 @@ struct av_set_hdmi_mode_cmd : public ps3av_cmd
 
 		vuart.hdmi_behavior_mode = pkt->mode;
 
-		// EXPERIMENT: HDMI plug events disabled (VSH 0.91's libavset thread deadlocks with main_thread when it handles them)
-		// vuart.add_hdmi_events(UartHdmiEvent::UNPLUGGED, vuart.hdmi_res_set[0] ? UartHdmiEvent::HDCP_DONE : UartHdmiEvent::PLUGGED, true, false);
-		// vuart.add_hdmi_events(UartHdmiEvent::UNPLUGGED, vuart.hdmi_res_set[1] ? UartHdmiEvent::HDCP_DONE : UartHdmiEvent::PLUGGED, false, true);
+		vuart.add_hdmi_events(UartHdmiEvent::UNPLUGGED, vuart.hdmi_res_set[0] ? UartHdmiEvent::HDCP_DONE : UartHdmiEvent::PLUGGED, true, false);
+		vuart.add_hdmi_events(UartHdmiEvent::UNPLUGGED, vuart.hdmi_res_set[1] ? UartHdmiEvent::HDCP_DONE : UartHdmiEvent::PLUGGED, false, true);
 		vuart.write_resp<true>(pkt->hdr.cid, PS3AV_STATUS_SUCCESS);
 	}
 };
@@ -1355,8 +1354,7 @@ struct inc_avset_cmd : public ps3av_cmd
 
 		vuart.hdmi_res_set[0] = hdcp_done[0];
 		vuart.hdmi_res_set[1] = hdcp_done[1];
-		// EXPERIMENT: HDMI HDCP_DONE event disabled
-		// vuart.add_hdmi_events(UartHdmiEvent::HDCP_DONE, vuart.hdmi_res_set[0], vuart.hdmi_res_set[1]);
+		vuart.add_hdmi_events(UartHdmiEvent::HDCP_DONE, vuart.hdmi_res_set[0], vuart.hdmi_res_set[1]);
 
 		if (vuart.hdmi_res_set[0])
 		{
@@ -2041,6 +2039,11 @@ error_code sys_uart_get_params(vm::ptr<vuart_params> buffer)
 
 void vuart_av_thread::operator()()
 {
+	// EXPERIMENT: HDMI events are only dispatched once VSH has been idle on the AV link for a while. VSH 0.91's libavset thread
+	// deadlocks (until a 3 s timeout) with main_thread if a plug event is handled while main_thread is inside an AV call.
+	constexpr u64 event_idle_guard_us = 400000;
+	u64 last_tx_end_us = 0;
+
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
 		if (Emu.IsPausedOrReady())
@@ -2052,13 +2055,16 @@ void vuart_av_thread::operator()()
 		const u64 hdmi_event_dist[2] = { hdmi_event_handler[0].time_until_next(), hdmi_event_handler[1].time_until_next() };
 		bool update_dist = false;
 
-		if (hdmi_event_dist[0] == 0)
+		const u64 now_us = get_system_time();
+		const u64 guard_left_us = (last_tx_end_us && now_us - last_tx_end_us < event_idle_guard_us) ? event_idle_guard_us - (now_us - last_tx_end_us) : 0;
+
+		if (hdmi_event_dist[0] == 0 && guard_left_us == 0)
 		{
 			dispatch_hdmi_event(hdmi_event_handler[0].get_occured_event(), UartAudioAvport::HDMI_0);
 			update_dist |= hdmi_event_handler[0].events_available();
 		}
 
-		if (hdmi_event_dist[1] == 0)
+		if (hdmi_event_dist[1] == 0 && guard_left_us == 0)
 		{
 			dispatch_hdmi_event(hdmi_event_handler[1].get_occured_event(), UartAudioAvport::HDMI_1);
 			update_dist |= hdmi_event_handler[1].events_available();
@@ -2069,8 +2075,12 @@ void vuart_av_thread::operator()()
 			continue;
 		}
 
-		const u64 wait_time = [&]()
+		const u64 wait_time = [&]() -> u64
 		{
+			// An event is due but being held back until VSH has been idle: wake up when the guard expires
+			if (guard_left_us && (hdmi_event_dist[0] == 0 || hdmi_event_dist[1] == 0))
+				return guard_left_us;
+
 			if (hdmi_event_dist[0] != 0 && hdmi_event_dist[1] != 0)
 				return std::min(hdmi_event_dist[0], hdmi_event_dist[1]);
 			else
@@ -2096,6 +2106,8 @@ void vuart_av_thread::operator()()
 
 			commit_rx_buf(false);
 			commit_rx_buf(true);
+
+			last_tx_end_us = get_system_time();
 		}
 	}
 }
