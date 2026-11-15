@@ -990,6 +990,48 @@ namespace rsx
 			const u32 reg = (command.reg & 0xffff) >> 2;
 			const u32 value = command.value;
 
+			if (Emu.IsVsh()) [[unlikely]]
+			{
+				// VSH diag (0.90 black screen): trace the state methods that should precede the XMB's first draw.
+				// Only the RSX thread runs this, so plain statics are fine.
+				static u32 s_tp_words = 0, s_tp_load = 0, s_shader_ctrl = 0, s_shader_prog = 0, s_draws = 0;
+
+				if (reg >= NV4097_SET_TRANSFORM_PROGRAM && reg < (NV4097_SET_TRANSFORM_PROGRAM + 32u))
+				{
+					s_tp_words++;
+				}
+				else if (reg == NV4097_SET_TRANSFORM_PROGRAM_LOAD)
+				{
+					if (s_tp_load++ < 6u)
+					{
+						rsx_log.warning("VSH diag: FIFO transform_program_load=0x%x (#%u, tp_words_so_far=%u) fifo_pos=0x%x", value, s_tp_load, s_tp_words, fifo_ctrl->get_pos());
+					}
+				}
+				else if (reg == NV4097_SET_SHADER_CONTROL)
+				{
+					if (s_shader_ctrl++ < 6u)
+					{
+						rsx_log.warning("VSH diag: FIFO shader_control=0x%x (#%u) fifo_pos=0x%x", value, s_shader_ctrl, fifo_ctrl->get_pos());
+					}
+				}
+				else if (reg == NV4097_SET_SHADER_PROGRAM)
+				{
+					if (s_shader_prog++ < 6u)
+					{
+						rsx_log.warning("VSH diag: FIFO shader_program=0x%x (#%u) fifo_pos=0x%x", value, s_shader_prog, fifo_ctrl->get_pos());
+					}
+				}
+				else if (reg == NV4097_SET_BEGIN_END && value)
+				{
+					if (s_draws++ < 4u)
+					{
+						const auto& tp = m_ctx->register_state->transform_program;
+						rsx_log.warning("VSH diag: FIFO draw begin primitive=0x%x (#%u): tp_words=%u tp_loads=%u shader_ctrl_writes=%u shader_prog_writes=%u fifo_pos=0x%x tp[0..3]=%08x %08x %08x %08x",
+							value, s_draws, s_tp_words, s_tp_load, s_shader_ctrl, s_shader_prog, fifo_ctrl->get_pos(), tp[0], tp[1], tp[2], tp[3]);
+					}
+				}
+			}
+
 			m_ctx->register_state->decode(reg, value);
 
 			if (auto method = methods[reg])
