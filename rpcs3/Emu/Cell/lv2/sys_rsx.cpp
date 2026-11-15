@@ -1295,6 +1295,49 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 					static_cast<u32>(render->int_flip_index), static_cast<u32>(render->vblank_count.load()),
 					frame_stats.draw_calls, frame_stats.submit_count);
 			}
+
+			// VSH diag (black screen on 0.90): is there picture data in the display buffer being flipped?
+			// The 0.90 XMB is not drawn with RSX draw calls, so it must be written into the buffer by the CPU/SPUs.
+			if (diag_n < 10u || diag_n % 60u == 0u)
+			{
+				const u32 buf = static_cast<u32>(a3);
+
+				if (buf < std::size(render->display_buffers))
+				{
+					const u32 offset = static_cast<u32>(render->display_buffers[buf].offset);
+					const u32 pitch = static_cast<u32>(render->display_buffers[buf].pitch);
+					const u32 width = static_cast<u32>(render->display_buffers[buf].width);
+					const u32 height = static_cast<u32>(render->display_buffers[buf].height);
+					const u32 base = rsx::constants::local_mem_base + offset;
+
+					if (pitch && width && height && vm::check_addr(base, vm::page_readable, pitch * height))
+					{
+						u32 samples = 0, nonblack = 0;
+						u64 sum = 0;
+
+						for (u32 y = 0; y < height; y += std::max(1u, height / 32u))
+						{
+							for (u32 x = 0; x < width; x += std::max(1u, width / 32u))
+							{
+								const u32 px = *vm::_ptr<u32>(base + y * pitch + x * 4);
+								samples++;
+								sum += px;
+
+								if (px & 0xffffffu)
+								{
+									nonblack++;
+								}
+							}
+						}
+
+						sys_rsx.warning("VSH diag: display buffer content flip #%u buffer=%u samples=%u nonzero=%u sum=0x%llx", diag_n, buf, samples, nonblack, sum);
+					}
+					else
+					{
+						sys_rsx.warning("VSH diag: display buffer content flip #%u buffer=%u not readable (offset=0x%x pitch=0x%x size=%ux%u)", diag_n, buf, offset, pitch, width, height);
+					}
+				}
+			}
 		}
 
 		render->send_event(0, SYS_RSX_EVENT_FLIP_BASE << 1, 0);
