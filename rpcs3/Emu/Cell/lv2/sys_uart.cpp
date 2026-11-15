@@ -679,8 +679,9 @@ struct av_set_hdmi_mode_cmd : public ps3av_cmd
 
 		vuart.hdmi_behavior_mode = pkt->mode;
 
-		vuart.add_hdmi_events(UartHdmiEvent::UNPLUGGED, vuart.hdmi_res_set[0] ? UartHdmiEvent::HDCP_DONE : UartHdmiEvent::PLUGGED, true, false);
-		vuart.add_hdmi_events(UartHdmiEvent::UNPLUGGED, vuart.hdmi_res_set[1] ? UartHdmiEvent::HDCP_DONE : UartHdmiEvent::PLUGGED, false, true);
+		// EXPERIMENT: HDMI plug events disabled (VSH 0.91's libavset thread deadlocks with main_thread when it handles them)
+		// vuart.add_hdmi_events(UartHdmiEvent::UNPLUGGED, vuart.hdmi_res_set[0] ? UartHdmiEvent::HDCP_DONE : UartHdmiEvent::PLUGGED, true, false);
+		// vuart.add_hdmi_events(UartHdmiEvent::UNPLUGGED, vuart.hdmi_res_set[1] ? UartHdmiEvent::HDCP_DONE : UartHdmiEvent::PLUGGED, false, true);
 		vuart.write_resp<true>(pkt->hdr.cid, PS3AV_STATUS_SUCCESS);
 	}
 };
@@ -1354,7 +1355,8 @@ struct inc_avset_cmd : public ps3av_cmd
 
 		vuart.hdmi_res_set[0] = hdcp_done[0];
 		vuart.hdmi_res_set[1] = hdcp_done[1];
-		vuart.add_hdmi_events(UartHdmiEvent::HDCP_DONE, vuart.hdmi_res_set[0], vuart.hdmi_res_set[1]);
+		// EXPERIMENT: HDMI HDCP_DONE event disabled
+		// vuart.add_hdmi_events(UartHdmiEvent::HDCP_DONE, vuart.hdmi_res_set[0], vuart.hdmi_res_set[1]);
 
 		if (vuart.hdmi_res_set[0])
 		{
@@ -1732,19 +1734,6 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 	const std::unique_ptr<u8[]> data = std::make_unique<u8[]>(size);
 	u32 read_size = 0;
 
-	// Diagnostic (only for VSH's libavset receive thread, capped): entry/exit of the blocking read
-	const bool rx_diag = [&]()
-	{
-		static atomic_t<u32> s_rx_diag_count{0};
-		const auto name = ppu.ppu_tname.load();
-		return name && *name == "_libavset_recv_data_handler" && s_rx_diag_count.fetch_add(1) < 120u;
-	}();
-
-	if (rx_diag)
-	{
-		sys_uart.warning("VSH diag: libavset sys_uart_receive ENTER req_size=0x%llx mode=0x%x", size, mode);
-	}
-
 	auto vuart_read = [&](u8 *buf, u32 buf_size) -> s32
 	{
 		constexpr u32 ITER_SIZE = 4096;
@@ -1813,11 +1802,6 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 	if (!vm::check_addr(buffer.addr(), vm::page_writable, read_size))
 	{
 		return CELL_EFAULT;
-	}
-
-	if (rx_diag)
-	{
-		sys_uart.warning("VSH diag: libavset sys_uart_receive EXIT got=0x%x", read_size);
 	}
 
 	memcpy(buffer.get_ptr(), data.get(), read_size);
