@@ -847,6 +847,24 @@ std::string FragmentProgramDecompiler::BuildCode()
 
 		// Emit debug warning. Useful to diagnose regressions, but should be removed in future.
 		rsx_log.warning("ROP reads from %s without writing to it. Final value will be gathered.", reg_name);
+
+		{
+			// VSH diag (black screen on 0.90): dump the start of the fragment program (first 3 times only)
+			static atomic_t<u32> s_fp_dump_count{0};
+
+			if (s_fp_dump_count.fetch_add(1) < 3u && m_prog.data.data_ptr)
+			{
+				const auto* words_ptr = static_cast<const be_t<u32>*>(m_prog.data.data_ptr);
+				std::string words;
+
+				for (u32 w = 0; w < 16u; w++)
+				{
+					fmt::append(words, "%s%08x", w % 4 ? " " : (w ? " | " : ""), static_cast<u32>(words_ptr[w]));
+				}
+
+				rsx_log.warning("VSH diag: fragment program (ROP gather on %s): size=%u offset=0x%x first words: %s", reg_name, m_size, m_prog.offset, words);
+			}
+		}
 	}
 
 	if (properties.has_dynamic_register_load)

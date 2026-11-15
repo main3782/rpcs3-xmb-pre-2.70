@@ -402,6 +402,24 @@ std::string VertexProgramDecompiler::BuildCode()
 		lvl += m_instructions[i].open_scopes;
 	}
 
+	{
+		// VSH diag (black screen on 0.90): dump the start of the first few vertex programs the RSX decodes, with and without POS output
+		static atomic_t<u32> s_vp_dump_count{0};
+
+		if (s_vp_dump_count.fetch_add(1) < 4u)
+		{
+			std::string words;
+
+			for (usz w = 0; w < std::min<usz>(m_prog.data.size(), 32); w++)
+			{
+				fmt::append(words, "%s%08x", w % 4 ? " " : (w ? " | " : ""), m_prog.data[w]);
+			}
+
+			rsx_log.warning("VSH diag: vertex program: has_pos_output=%d instr_count=%u data_words=%u entry=%u base_address=0x%x output_mask=0x%x ctrl=0x%x first words: %s",
+				m_parr.HasParam(PF_PARAM_OUT, getFloatTypeName(4), "dst_reg0") ? 1 : 0, static_cast<u32>(m_instr_count), static_cast<u32>(m_prog.data.size()), m_prog.entry, m_prog.base_address, m_prog.output_mask, m_prog.ctrl, words);
+		}
+	}
+
 	if (const auto float4_type = getFloatTypeName(4); !m_parr.HasParam(PF_PARAM_OUT, float4_type, "dst_reg0"))
 	{
 		rsx_log.warning("Vertex program has no POS output, shader will be NOPed");
