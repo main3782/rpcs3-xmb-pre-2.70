@@ -1280,6 +1280,33 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			static atomic_t<u32> s_flip_diag{0};
 			const u32 diag_n = s_flip_diag++;
 
+			// VSH diag (black screen on 0.90): cumulative RSX activity, summed over every flip (not just the sampled ones)
+			{
+				static atomic_t<u64> s_total_draws{0};
+				static atomic_t<u64> s_total_submits{0};
+				static atomic_t<u32> s_first_draw_flip{0xffffffffu};
+				const auto& stats_now = render->get_stats();
+
+				if (stats_now.draw_calls)
+				{
+					s_total_draws += stats_now.draw_calls;
+
+					u32 expected = 0xffffffffu;
+
+					if (s_first_draw_flip.compare_exchange(expected, diag_n))
+					{
+						sys_rsx.warning("VSH diag: FIRST frame with draw calls at flip #%u (draw_calls=%u submit_count=%u)", diag_n, stats_now.draw_calls, stats_now.submit_count);
+					}
+				}
+
+				s_total_submits += stats_now.submit_count;
+
+				if (diag_n % 300u == 0u)
+				{
+					sys_rsx.warning("VSH diag: cumulative RSX activity at flip #%u: total_draw_calls=%llu total_submits=%llu first_draw_flip=%d", diag_n, s_total_draws.load(), s_total_submits.load(), static_cast<s32>(s_first_draw_flip.load()));
+				}
+			}
+
 			if (diag_n < 3u || diag_n % 300u == 0u)
 			{
 				const u32 buf = static_cast<u32>(a3);
