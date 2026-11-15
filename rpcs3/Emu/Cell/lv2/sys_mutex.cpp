@@ -149,6 +149,21 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 {
 	ppu.state += cpu_flag::wait;
 
+	{
+		// Diagnostic (VSH AV threads only, capped)
+		const auto diag_name = ppu.ppu_tname.load();
+
+		if (diag_name && (*diag_name == "_libavset_recv_data_handler" || *diag_name == "main_thread"))
+		{
+			static atomic_t<u32> s_diag_count{0};
+
+			if (s_diag_count.fetch_add(1) < 300u)
+			{
+				sys_mutex.warning("VSH diag: sys_mutex_lock by '%s' mutex_id=0x%x timeout=0x%llx", *diag_name, mutex_id, timeout);
+			}
+		}
+	}
+
 	sys_mutex.trace("sys_mutex_lock(mutex_id=0x%x, timeout=0x%llx)", mutex_id, timeout);
 
 	const auto mutex = idm::get<lv2_obj, lv2_mutex>(mutex_id, [&, notify = lv2_obj::notify_all_t()](lv2_mutex& mutex)

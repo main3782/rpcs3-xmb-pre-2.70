@@ -487,6 +487,21 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 {
 	ppu.state += cpu_flag::wait;
 
+	{
+		// Diagnostic (VSH AV threads only, capped)
+		const auto diag_name = ppu.ppu_tname.load();
+
+		if (diag_name && (*diag_name == "_libavset_recv_data_handler" || *diag_name == "main_thread"))
+		{
+			static atomic_t<u32> s_diag_count{0};
+
+			if (s_diag_count.fetch_add(1) < 300u)
+			{
+				sys_cond.warning("VSH diag: sys_cond_wait by '%s' cond_id=0x%x timeout=0x%llx", *diag_name, cond_id, timeout);
+			}
+		}
+	}
+
 	if (const auto name = ppu.ppu_tname.load(); name && name->find("hidportassign") != umax)
 	{
 		static atomic_t<u32> s_count = 0;

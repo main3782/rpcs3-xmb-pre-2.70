@@ -136,6 +136,21 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 {
 	ppu.state += cpu_flag::wait;
 
+	{
+		// Diagnostic (VSH AV threads only, capped)
+		const auto diag_name = ppu.ppu_tname.load();
+
+		if (diag_name && (*diag_name == "_libavset_recv_data_handler" || *diag_name == "main_thread"))
+		{
+			static atomic_t<u32> s_diag_count{0};
+
+			if (s_diag_count.fetch_add(1) < 300u)
+			{
+				sys_lwmutex.warning("VSH diag: _sys_lwmutex_lock by '%s' lwmutex_id=0x%x timeout=0x%llx", *diag_name, lwmutex_id, timeout);
+			}
+		}
+	}
+
 	sys_lwmutex.trace("_sys_lwmutex_lock(lwmutex_id=0x%x, timeout=0x%llx)", lwmutex_id, timeout);
 
 	ppu.gpr[3] = CELL_OK;
