@@ -37,9 +37,25 @@ namespace rsx
 		// Experiment (0.82 VSH bring-up, a guess): the flip command buffers of 0.82's libgcm wait for label 3 (offset 0x30) to become 0.
 		// Nothing that runs releases it (it is presumably meant for the second context), so every flip would only proceed after the
 		// 1 s acquire timeout. For that firmware (authority ID 0x1070000400000001) the wait is skipped and the label set to the wanted value.
+		//
+		// 0.90 VSH (authority ID 0x10700003ff000001, SDK version 0x90xxx) has the same wait. There the 1 s timeouts are harmful: the RSX is stuck on
+		// the acquire while the VSH resets the FIFO (sys_rsx_context_attribute package 0x1, get=put) for the 3rd time, so the init commands queued
+		// behind the acquire (transform program upload, shader control) are discarded when the boot is fast enough (PPU cache present).
 		static bool vsh_skip_label3_wait(u32 addr, u32 label_addr)
 		{
-			return addr == label_addr + 0x30 && g_ps3_process_info.self_info.valid && g_ps3_process_info.self_info.prog_id_hdr.program_authority_id == 0x1070000400000001ull;
+			if (addr != label_addr + 0x30 || !g_ps3_process_info.self_info.valid)
+			{
+				return false;
+			}
+
+			const u64 authority_id = g_ps3_process_info.self_info.prog_id_hdr.program_authority_id;
+
+			if (authority_id == 0x1070000400000001ull)
+			{
+				return true;
+			}
+
+			return authority_id == 0x10700003ff000001ull && (static_cast<u32>(g_ps3_process_info.sdk_ver) >> 12) == 0x90u;
 		}
 
 		void set_reference(context* ctx, u32 /*reg*/, u32 arg)
