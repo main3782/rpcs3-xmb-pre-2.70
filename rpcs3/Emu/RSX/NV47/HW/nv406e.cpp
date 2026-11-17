@@ -38,7 +38,7 @@ namespace rsx
 		// Nothing that runs releases it (it is presumably meant for the second context), so every flip would only proceed after the
 		// 1 s acquire timeout. For that firmware (authority ID 0x1070000400000001) the wait is skipped and the label set to the wanted value.
 		//
-		// 0.90 VSH (authority ID 0x10700003ff000001, SDK version 0x90xxx) has the same wait. There the 1 s timeouts are harmful: the RSX is stuck on
+		// 0.90 VSH (authority ID 0x10700003ff000001, no SDK version) has the same wait. There the 1 s timeouts are harmful: the RSX is stuck on
 		// the acquire while the VSH resets the FIFO (sys_rsx_context_attribute package 0x1, get=put) for the 3rd time, so the init commands queued
 		// behind the acquire (transform program upload, shader control) are discarded when the boot is fast enough (PPU cache present).
 		static bool vsh_skip_label3_wait(u32 addr, u32 label_addr)
@@ -55,7 +55,9 @@ namespace rsx
 				return true;
 			}
 
-			return authority_id == 0x10700003ff000001ull && (static_cast<u32>(g_ps3_process_info.sdk_ver) >> 12) == 0x90u;
+			// The 0.90 vsh.self has no process param, so its SDK version stays at SYS_PROCESS_PARAM_SDK_VERSION_UNKNOWN (0xffffffff).
+			// 0.91 (0x91005), 0.92 (0x92002) and 1.xx (e.g. 0x170000) have one and are not affected.
+			return authority_id == 0x10700003ff000001ull && static_cast<u32>(g_ps3_process_info.sdk_ver) == 0xffffffffu;
 		}
 
 		void set_reference(context* ctx, u32 /*reg*/, u32 arg)
