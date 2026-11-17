@@ -38,26 +38,40 @@ namespace rsx
 		// Nothing that runs releases it (it is presumably meant for the second context), so every flip would only proceed after the
 		// 1 s acquire timeout. For that firmware (authority ID 0x1070000400000001) the wait is skipped and the label set to the wanted value.
 		//
-		// 0.90 VSH (authority ID 0x10700003ff000001, no SDK version) has the same wait. There the 1 s timeouts are harmful: the RSX is stuck on
-		// the acquire while the VSH resets the FIFO (sys_rsx_context_attribute package 0x1, get=put) for the 3rd time, so the init commands queued
+		// 0.90 VSH (detected by its missing SDK version, see below) has the same wait. There the 1 s timeouts are harmful: the RSX is stuck on
+		// the acquire while the VSH resets the FIFO (sys_rsx_context_attribute package 0x1, get=put) again, so the init commands queued
 		// behind the acquire (transform program upload, shader control) are discarded when the boot is fast enough (PPU cache present).
 		static bool vsh_skip_label3_wait(u32 addr, u32 label_addr)
 		{
-			if (addr != label_addr + 0x30 || !g_ps3_process_info.self_info.valid)
+			if (addr != label_addr + 0x30)
 			{
 				return false;
 			}
 
-			const u64 authority_id = g_ps3_process_info.self_info.prog_id_hdr.program_authority_id;
+			const bool info_valid = g_ps3_process_info.self_info.valid;
+			const u64 authority_id = info_valid ? static_cast<u64>(g_ps3_process_info.self_info.prog_id_hdr.program_authority_id) : 0;
+			const u32 sdk_ver = static_cast<u32>(g_ps3_process_info.sdk_ver);
 
-			if (authority_id == 0x1070000400000001ull)
+			// 0.83 VSH
+			bool skip = info_valid && authority_id == 0x1070000400000001ull;
+
+			// 0.90 VSH has the same wait. Its vsh.self has no process param, so the SDK version stays at SYS_PROCESS_PARAM_SDK_VERSION_UNKNOWN (0xffffffff);
+			// 0.91 (0x91005), 0.92 (0x92002) and 1.xx (e.g. 0x170000) have one and are not affected.
+			// The 1 s timeouts are harmful there: the RSX is stuck on the acquire while the VSH resets the FIFO (sys_rsx_context_attribute package 0x1,
+			// get=put) again, so the init commands queued behind the acquire (transform program upload, shader control) are discarded when the boot is fast.
+			if (!skip && Emu.IsVsh() && sdk_ver == 0xffffffffu)
 			{
-				return true;
+				skip = true;
 			}
 
-			// The 0.90 vsh.self has no process param, so its SDK version stays at SYS_PROCESS_PARAM_SDK_VERSION_UNKNOWN (0xffffffff).
-			// 0.91 (0x91005), 0.92 (0x92002) and 1.xx (e.g. 0x170000) have one and are not affected.
-			return authority_id == 0x10700003ff000001ull && static_cast<u32>(g_ps3_process_info.sdk_ver) == 0xffffffffu;
+			static atomic_t<u32> s_diag_count{0};
+
+			if (s_diag_count.fetch_add(1) < 3u)
+			{
+				rsx_log.warning("VSH diag: label 3 wait check: addr=0x%x label_addr=0x%x info_valid=%d authority_id=0x%llx sdk_ver=0x%x is_vsh=%d -> skip=%d", addr, label_addr, info_valid ? 1 : 0, authority_id, sdk_ver, Emu.IsVsh() ? 1 : 0, skip ? 1 : 0);
+			}
+
+			return skip;
 		}
 
 		void set_reference(context* ctx, u32 /*reg*/, u32 arg)
