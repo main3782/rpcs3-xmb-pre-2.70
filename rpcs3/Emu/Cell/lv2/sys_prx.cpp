@@ -673,10 +673,20 @@ bool vsh_start_audio_module(ppu_thread& ppu)
 
 	if (!fs::is_file(vfs::get(vpath)))
 	{
-		// 2.00 and older ship the server only as sys_audio.self. A copy of the module of a newer firmware (2.17 works for 2.00)
-		// can be placed in vsh_audio/sys_audio.sprx next to the emulator, or in the parent folder to share it between installs.
+		// 2.00 and older ship the server only as sys_audio.self. A copy of the module of a newer firmware (2.10 and 2.17 work for 2.00)
+		// can be placed in vsh_audio/sys_audio.sprx next to the emulator (the build copies <repo>/bin/vsh_audio there), or in the parent
+		// folder to share it between installs. The config folder is not the executable folder on Linux, so both are tried.
 		const std::string dir = fs::get_config_dir();
-		const std::string candidates[] = { dir + "vsh_audio/sys_audio.sprx", dir + "../vsh_audio/sys_audio.sprx" };
+		const std::string exe_dir = fs::get_executable_dir();
+		std::vector<std::string> candidates;
+		candidates.push_back(dir + "vsh_audio/sys_audio.sprx");
+
+		if (!exe_dir.empty() && exe_dir != dir)
+		{
+			candidates.push_back(exe_dir + "vsh_audio/sys_audio.sprx");
+		}
+
+		candidates.push_back(dir + "../vsh_audio/sys_audio.sprx");
 
 		std::string used;
 
@@ -691,7 +701,14 @@ bool vsh_start_audio_module(ppu_thread& ppu)
 
 		if (used.empty())
 		{
-			sys_prx.warning("vsh_start_audio_module(): '%s', '%s' and '%s' do not exist", vpath, candidates[0], candidates[1]);
+			std::string tried;
+
+			for (const std::string& candidate : candidates)
+			{
+				tried += (tried.empty() ? "'" : ", '") + candidate + "'";
+			}
+
+			sys_prx.warning("vsh_start_audio_module(): '%s' does not exist and no copy of the module was found in: %s", vpath, tried);
 			return false;
 		}
 

@@ -148,6 +148,13 @@ if (NOT ANDROID)
                 --verbose 0 "$<TARGET_FILE:rpcs3>")
     endif()
 
+    # Copy vsh_audio/sys_audio.sprx (kept out of the repository, see buildfiles/cmake/CopyVshAudio.cmake) to the executable directory
+    if(NOT APPLE)
+        add_custom_command(TARGET rpcs3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/bin/vsh_audio -DDST=$<TARGET_FILE_DIR:rpcs3>/vsh_audio
+                -P ${CMAKE_SOURCE_DIR}/buildfiles/cmake/CopyVshAudio.cmake)
+    endif()
+
     # Unix installation
     if(UNIX AND NOT APPLE)
         # Install the binary
