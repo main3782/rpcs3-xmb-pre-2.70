@@ -22,9 +22,12 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 
@@ -992,8 +995,12 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 //     float, 2 or 8 channels (channels * 1024 bytes per block).
 //   - Op 0x1c gives the offset of the tag tables (0x1000) and op 0x1a the 16-bit offsets of the four tag arrays of a port inside them.
 //     The wave thread does not read them, so they stay zero.
-// The mixer runs from the write callback of the audio backend, so it keeps real time without a thread of its own. It is only created
-// when a legacy client sends a request, no other firmware touches it.
+// A thread ticks every 256 frames of wall clock time (5.33 ms), like the real server does, and queues the mixed blocks. The write
+// callback of the audio backend only drains that queue. The ticks must not be driven by the callback: it asks for 480 frames or more
+// at once, which would consume several blocks in a burst, and the client only writes one block ahead of the read index (every second
+// block played was silence that way). The queue is kept at a few blocks by prefilling it and by nudging the tick period when it
+// drifts, since the clock of the sound device does not run exactly like the system clock. Only created when a legacy client sends a
+// request, no other firmware touches it.
 struct vsh_legacy_audio_t
 {
 	static constexpr u32 max_ports = 8;
@@ -1018,15 +1025,25 @@ struct vsh_legacy_audio_t
 		shared_ptr<lv2_memory> mem;
 	};
 
+	static constexpr u32 ring_blocks = 16;
+
 	std::mutex mtx;
 	port_t ports[max_ports]{};
 	shared_ptr<lv2_memory> ctl_mem;
-	std::array<f32, block_frames * 2> mix{}; // Stereo block that is currently played
-	u32 mix_pos = block_frames; // Frames of 'mix' already played
+	std::array<std::array<f32, block_frames * 2>, ring_blocks> ring{}; // Mixed stereo blocks waiting to be played
+	u32 ring_head = 0; // Oldest queued block
+	u32 ring_count = 0; // Queued blocks
+	std::array<f32, block_frames * 2> cur{}; // Block that is currently played
+	u32 cur_pos = block_frames; // Frames of 'cur' already played
+	bool primed = false; // The queue was filled enough to start playing
+	u32 cb_frames = 0; // Largest number of frames the backend asked for at once
 	std::shared_ptr<AudioBackend> backend;
 	u32 backend_channels = 2;
 	bool backend_tried = false;
+	std::unique_ptr<named_thread<std::function<void()>>> ticker;
 	u32 log_missing = 0;
+	u32 log_underruns = 0;
+	u32 log_overflows = 0;
 
 	vsh_legacy_audio_t() = default;
 	vsh_legacy_audio_t(const vsh_legacy_audio_t&) = delete;
@@ -1034,7 +1051,9 @@ struct vsh_legacy_audio_t
 
 	~vsh_legacy_audio_t()
 	{
-		// Close() waits for a running write callback, which takes the mutex, so it must not be held here
+		// The thread and Close() wait for code that takes the mutex, so it must not be held here
+		ticker.reset();
+
 		if (backend)
 		{
 			backend->Close();
@@ -1083,8 +1102,16 @@ struct vsh_legacy_audio_t
 		}
 
 		ctl_mem.reset();
-		mix.fill(0.0f);
-		mix_pos = block_frames;
+		ring_head = 0;
+		ring_count = 0;
+		cur_pos = block_frames;
+		primed = false;
+	}
+
+	// Blocks that are kept queued: enough for the largest request of the backend plus a margin
+	u32 target_blocks() const
+	{
+		return std::clamp<u32>((cb_frames + block_frames - 1) / block_frames + 2, 3, 8);
 	}
 
 	// Returns the port index or -1. 'size' is the size of the shared memory the client has to allocate.
@@ -1199,13 +1226,66 @@ struct vsh_legacy_audio_t
 
 		backend = std::move(be);
 
+		ticker = std::make_unique<named_thread<std::function<void()>>>("VSH Audio HLE", [this]()
+		{
+			tick_loop();
+		});
+
 		sys_event.warning("AUDIO-HLE: audio backend opened: device '%s', %u channels", device, backend_channels);
 	}
 
-	// Consumes one block of every started port and builds the next stereo block. mtx must be held.
+	// Thread: one tick per block of wall clock time
+	void tick_loop()
+	{
+		using clock = std::chrono::steady_clock;
+		using namespace std::chrono_literals;
+
+		const auto period = std::chrono::nanoseconds(5'333'333); // 256 frames at 48 kHz
+		auto next = clock::now();
+
+		while (thread_ctrl::state() != thread_state::aborting)
+		{
+			const bool running = Emu.IsRunning();
+
+			if (running)
+			{
+				std::lock_guard lock(mtx);
+
+				tick();
+
+				// Keep the queue at its target while the sound device and the system clock drift apart
+				const u32 target = target_blocks();
+
+				if (ring_count > target + 2)
+				{
+					next += 200us;
+				}
+				else if (primed && ring_count + 1 < target)
+				{
+					next -= 200us;
+				}
+			}
+
+			next += period;
+
+			const auto now = clock::now();
+
+			if (next > now)
+			{
+				thread_ctrl::wait_for_accurate(static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(next - now).count()));
+			}
+			else if (now - next > 2 * period)
+			{
+				// Paused or stalled: do not catch up with a burst of ticks
+				next = now;
+			}
+		}
+	}
+
+	// Consumes one block of every started port and queues the mixed stereo block. mtx must be held.
 	void tick()
 	{
-		mix.fill(0.0f);
+		std::array<f32, block_frames * 2> mix{};
 
 		shm_hold_t ctl_data;
 		u8* const ctl = map(ctl_mem, ctl_key, read_index_offset + 16 * max_ports, ctl_data);
@@ -1287,9 +1367,24 @@ struct vsh_legacy_audio_t
 			p.index = (p.index + 1) % p.nblock;
 			read_index = u64{p.index};
 		}
+
+		if (ring_count == ring_blocks)
+		{
+			// The backend stopped draining (device stall): drop the oldest block
+			ring_head = (ring_head + 1) % ring_blocks;
+			ring_count--;
+
+			if (log_overflows++ < 5)
+			{
+				sys_event.warning("AUDIO-HLE: queue full, dropped a block");
+			}
+		}
+
+		ring[(ring_head + ring_count) % ring_blocks] = mix;
+		ring_count++;
 	}
 
-	// Write callback of the audio backend
+	// Write callback of the audio backend: plays the queued blocks, silence while the queue fills up or after an underrun
 	u32 fill_buffer(u32 byte_cnt, void* buf)
 	{
 		std::memset(buf, 0, byte_cnt);
@@ -1305,17 +1400,48 @@ struct vsh_legacy_audio_t
 
 		std::lock_guard lock(mtx);
 
-		for (u32 f = 0; f < frames; f++)
+		if (frames > cb_frames)
 		{
-			if (mix_pos >= block_frames)
+			cb_frames = frames;
+			sys_event.warning("AUDIO-HLE: the backend asks for %u frames at a time, %u blocks are kept queued", frames, target_blocks());
+		}
+
+		if (!primed)
+		{
+			if (ring_count < target_blocks())
 			{
-				tick();
-				mix_pos = 0;
+				return byte_cnt;
 			}
 
-			out[f * ch + 0] = std::clamp(mix[mix_pos * 2 + 0], -1.0f, 1.0f);
-			out[f * ch + 1] = std::clamp(mix[mix_pos * 2 + 1], -1.0f, 1.0f);
-			mix_pos++;
+			primed = true;
+		}
+
+		for (u32 f = 0; f < frames; f++)
+		{
+			if (cur_pos >= block_frames)
+			{
+				if (ring_count == 0)
+				{
+					// Ran dry (the thread was late): play silence until the queue has filled up again
+					primed = false;
+
+					if (log_underruns++ < 10)
+					{
+						sys_event.warning("AUDIO-HLE: queue ran dry");
+					}
+
+					break;
+				}
+
+				cur = ring[ring_head];
+				ring_head = (ring_head + 1) % ring_blocks;
+				ring_count--;
+				cur_pos = 0;
+			}
+
+			out[f * ch + 0] = std::clamp(cur[cur_pos * 2 + 0], -1.0f, 1.0f);
+			out[f * ch + 1] = std::clamp(cur[cur_pos * 2 + 1], -1.0f, 1.0f);
+			cur_pos++;
 		}
 
 		return byte_cnt;
