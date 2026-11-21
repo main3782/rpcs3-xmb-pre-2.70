@@ -5,6 +5,8 @@
 #include "Emu/IPC.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
+#include "Emu/emu_callbacks.h"
+#include "Emu/Audio/AudioBackend.h"
 
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Memory/vm.h"
@@ -12,9 +14,16 @@
 #include "Emu/Cell/SPUThread.h"
 #include "Emu/Cell/timers.hpp"
 #include "sys_process.h"
+#include "sys_mmapper.h"
 
 #include "util/asm.hpp"
+#include "util/vm.hpp"
 
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <set>
@@ -972,6 +981,444 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 	return CELL_OK;
 }
 
+// HLE mixer for the audio server of the 0.83 to 0.85 clients (IPC key 0x12340098).
+// These firmwares ship the server only as sys_audio.self: a statically linked process at fixed addresses that cannot run next to VSH,
+// and its protocol differs from the sys_audio.sprx of 2.xx. So the server side is emulated here. What the client needs (libaudio_internal
+// and paf's wave thread) was read from the binaries, nothing here is a guess about the data path, but none of it is verified by a log yet:
+//   - A control shared memory (ipc key from op 0x09, created by the client). The u64 read index of port N is at 0x800 + 16 * N, big endian.
+//     The wave thread polls it (usleep 2666) and writes block (index + 1) % nblock, so the server has to consume block 'index' and then
+//     increment the index, once per 256 frames (5.33 ms at 48 kHz).
+//   - A port shared memory (ipc key from op 0x05, created by the client) holding nblock blocks of 256 frames, interleaved big endian
+//     float, 2 or 8 channels (channels * 1024 bytes per block).
+//   - Op 0x1c gives the offset of the tag tables (0x1000) and op 0x1a the 16-bit offsets of the four tag arrays of a port inside them.
+//     The wave thread does not read them, so they stay zero.
+// The mixer runs from the write callback of the audio backend, so it keeps real time without a thread of its own. It is only created
+// when a legacy client sends a request, no other firmware touches it.
+struct vsh_legacy_audio_t
+{
+	static constexpr u32 max_ports = 8;
+	static constexpr u32 block_frames = 256;
+	static constexpr u32 read_index_offset = 0x800; // + 16 * port
+	static constexpr u32 tag_table_offset = 0x1000;
+	static constexpr u64 ctl_key = 0x8000cafe02465a00ull;
+	static constexpr u64 port_key_base = 0x8000cafe02465b00ull;
+
+	using shm_hold_t = decltype(std::declval<lv2_memory&>().shm.load());
+
+	struct port_t
+	{
+		bool used = false;
+		bool started = false;
+		bool synced = false; // read index taken over from the control memory
+		u32 nch = 0;
+		u32 nblock = 0;
+		u32 index = 0; // block that is read next
+		u32 log_ticks = 0;
+		u32 log_audible = 0;
+		shared_ptr<lv2_memory> mem;
+	};
+
+	std::mutex mtx;
+	port_t ports[max_ports]{};
+	shared_ptr<lv2_memory> ctl_mem;
+	std::array<f32, block_frames * 2> mix{}; // Stereo block that is currently played
+	u32 mix_pos = block_frames; // Frames of 'mix' already played
+	std::shared_ptr<AudioBackend> backend;
+	u32 backend_channels = 2;
+	bool backend_tried = false;
+	u32 log_missing = 0;
+
+	vsh_legacy_audio_t() = default;
+	vsh_legacy_audio_t(const vsh_legacy_audio_t&) = delete;
+	vsh_legacy_audio_t& operator=(const vsh_legacy_audio_t&) = delete;
+
+	~vsh_legacy_audio_t()
+	{
+		// Close() waits for a running write callback, which takes the mutex, so it must not be held here
+		if (backend)
+		{
+			backend->Close();
+			backend.reset();
+		}
+	}
+
+	static u64 port_key(u32 idx)
+	{
+		return port_key_base + (u64{idx} << 8);
+	}
+
+	// Host pointer of the shared memory with this ipc key, null until the client allocated and mapped it.
+	// 'data' keeps the memory alive while the pointer is used.
+	static u8* map(shared_ptr<lv2_memory>& hold, u64 key, u32 min_size, shm_hold_t& data)
+	{
+		if (!hold)
+		{
+			g_fxo->need<ipc_manager<lv2_memory, u64>>();
+			hold = g_fxo->get<ipc_manager<lv2_memory, u64>>().get(key);
+		}
+
+		if (!hold || hold->size < min_size)
+		{
+			return nullptr;
+		}
+
+		data = hold->shm.load();
+
+		if (!data || !*data)
+		{
+			return nullptr;
+		}
+
+		return (*data)->map_self();
+	}
+
+	// A new VSH boot starts the handshake again (op 0x09), forget everything of the previous one
+	void reset()
+	{
+		std::lock_guard lock(mtx);
+
+		for (port_t& p : ports)
+		{
+			p = port_t{};
+		}
+
+		ctl_mem.reset();
+		mix.fill(0.0f);
+		mix_pos = block_frames;
+	}
+
+	// Returns the port index or -1. 'size' is the size of the shared memory the client has to allocate.
+	s32 create_port(u32 nch, u32 nblock, u32& size)
+	{
+		std::lock_guard lock(mtx);
+
+		if ((nch != 2 && nch != 8) || nblock < 2 || nblock > 256 || (nblock & (nblock - 1)) != 0)
+		{
+			sys_event.error("AUDIO-HLE: port rejected: channels=%u blocks=%u", nch, nblock);
+			return -1;
+		}
+
+		for (u32 i = 0; i < max_ports; i++)
+		{
+			if (!ports[i].used)
+			{
+				ports[i] = port_t{};
+				ports[i].used = true;
+				ports[i].nch = nch;
+				ports[i].nblock = nblock;
+
+				size = std::max<u32>(0x10000, (nch * 1024 * nblock + 0xffff) & ~u32{0xffff});
+
+				sys_event.warning("AUDIO-HLE: port %u created: channels=%u blocks=%u size=0x%x key=0x%llx", i, nch, nblock, size, port_key(i));
+				return static_cast<s32>(i);
+			}
+		}
+
+		sys_event.error("AUDIO-HLE: no free port");
+		return -1;
+	}
+
+	bool port_exists(u32 idx)
+	{
+		std::lock_guard lock(mtx);
+		return idx < max_ports && ports[idx].used;
+	}
+
+	void start_port(u32 idx)
+	{
+		std::lock_guard lock(mtx);
+
+		if (idx >= max_ports || !ports[idx].used)
+		{
+			sys_event.error("AUDIO-HLE: start of unknown port %u", idx);
+			return;
+		}
+
+		ports[idx].started = true;
+		ports[idx].synced = false;
+
+		sys_event.warning("AUDIO-HLE: port %u started", idx);
+
+		start_backend();
+	}
+
+	void stop_port(u32 idx)
+	{
+		std::lock_guard lock(mtx);
+
+		if (idx < max_ports && ports[idx].used)
+		{
+			ports[idx].started = false;
+			sys_event.warning("AUDIO-HLE: port %u stopped", idx);
+		}
+	}
+
+	void remove_port(u32 idx)
+	{
+		std::lock_guard lock(mtx);
+
+		if (idx < max_ports && ports[idx].used)
+		{
+			ports[idx] = port_t{};
+			sys_event.warning("AUDIO-HLE: port %u removed", idx);
+		}
+	}
+
+	// mtx must be held
+	void start_backend()
+	{
+		if (backend || backend_tried)
+		{
+			return;
+		}
+
+		backend_tried = true;
+
+		auto be = g_emu_callbacks.get_audio();
+
+		if (!be)
+		{
+			sys_event.error("AUDIO-HLE: no audio backend available");
+			return;
+		}
+
+		const std::string device = g_cfg.audio.audio_device;
+
+		if (!be->Open(device, AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::stereo))
+		{
+			sys_event.error("AUDIO-HLE: the audio backend could not be opened (device '%s')", device);
+			return;
+		}
+
+		backend_channels = std::max<u32>(be->get_channels(), 2);
+		be->SetWriteCallback([this](u32 byte_cnt, void* buf) -> u32
+		{
+			return fill_buffer(byte_cnt, buf);
+		});
+		be->Play();
+
+		backend = std::move(be);
+
+		sys_event.warning("AUDIO-HLE: audio backend opened: device '%s', %u channels", device, backend_channels);
+	}
+
+	// Consumes one block of every started port and builds the next stereo block. mtx must be held.
+	void tick()
+	{
+		mix.fill(0.0f);
+
+		shm_hold_t ctl_data;
+		u8* const ctl = map(ctl_mem, ctl_key, read_index_offset + 16 * max_ports, ctl_data);
+
+		for (u32 i = 0; i < max_ports; i++)
+		{
+			port_t& p = ports[i];
+
+			if (!p.used || !p.started)
+			{
+				continue;
+			}
+
+			shm_hold_t data;
+			u8* const base = ctl ? map(p.mem, port_key(i), p.nch * 1024 * p.nblock, data) : nullptr;
+
+			if (!ctl || !base)
+			{
+				// The client has not allocated and mapped its shared memory (yet), or it uses another key than expected
+				if (log_missing++ < 6)
+				{
+					sys_event.warning("AUDIO-HLE: port %u waits for shared memory: control (key 0x%llx) %s, port (key 0x%llx) %s", i, ctl_key, ctl ? "found" : "missing", port_key(i), base ? "found" : "missing");
+				}
+
+				continue;
+			}
+
+			be_t<u64>& read_index = *reinterpret_cast<be_t<u64>*>(ctl + read_index_offset + 16 * i);
+
+			if (!p.synced)
+			{
+				p.index = static_cast<u32>(static_cast<u64>(read_index) % p.nblock);
+				p.synced = true;
+			}
+
+			const be_t<u32>* const src = reinterpret_cast<const be_t<u32>*>(base + p.index * p.nch * 1024);
+
+			std::array<f32, block_frames * 8> in{};
+			const u32 samples = block_frames * p.nch;
+
+			for (u32 k = 0; k < samples; k++)
+			{
+				const f32 v = std::bit_cast<f32>(static_cast<u32>(src[k]));
+				in[k] = std::isfinite(v) ? v : 0.0f;
+			}
+
+			std::array<f32, block_frames * 2> st{};
+
+			if (p.nch == 8)
+			{
+				AudioBackend::downmix(samples, 8, audio_channel_layout::stereo, in.data(), st.data());
+			}
+			else
+			{
+				std::copy_n(in.begin(), st.size(), st.begin());
+			}
+
+			f32 peak = 0.0f;
+
+			for (u32 k = 0; k < st.size(); k++)
+			{
+				mix[k] += st[k];
+				peak = std::max(peak, std::abs(st[k]));
+			}
+
+			// Enough to see in a log that blocks are consumed and when real sound arrives
+			if (p.log_ticks < 4 || (peak > 0.0001f && p.log_audible < 4))
+			{
+				p.log_ticks++;
+
+				if (peak > 0.0001f)
+				{
+					p.log_audible++;
+				}
+
+				sys_event.warning("AUDIO-HLE: port %u mixed block %u, peak=%f", i, p.index, peak);
+			}
+
+			p.index = (p.index + 1) % p.nblock;
+			read_index = u64{p.index};
+		}
+	}
+
+	// Write callback of the audio backend
+	u32 fill_buffer(u32 byte_cnt, void* buf)
+	{
+		std::memset(buf, 0, byte_cnt);
+
+		if (!Emu.IsRunning())
+		{
+			return byte_cnt;
+		}
+
+		f32* const out = static_cast<f32*>(buf);
+		const u32 ch = backend_channels;
+		const u32 frames = byte_cnt / (ch * static_cast<u32>(sizeof(f32)));
+
+		std::lock_guard lock(mtx);
+
+		for (u32 f = 0; f < frames; f++)
+		{
+			if (mix_pos >= block_frames)
+			{
+				tick();
+				mix_pos = 0;
+			}
+
+			out[f * ch + 0] = std::clamp(mix[mix_pos * 2 + 0], -1.0f, 1.0f);
+			out[f * ch + 1] = std::clamp(mix[mix_pos * 2 + 1], -1.0f, 1.0f);
+			mix_pos++;
+		}
+
+		return byte_cnt;
+	}
+};
+
+static vsh_legacy_audio_t& vsh_legacy_audio()
+{
+	g_fxo->need<vsh_legacy_audio_t>();
+	return g_fxo->get<vsh_legacy_audio_t>();
+}
+
+// Requests of the 0.83 to 0.85 client that have to be answered with the values of the real server. Returns false for the ones that
+// keep the generic answer. The values come from the handlers in sys_audio.self 0.85, see the comment above vsh_legacy_audio_t.
+static bool vsh_legacy_audio_request(u32 op, u64 d2, u64 d3, u64& reply_op, u64& r2, u64& r3)
+{
+	switch (op)
+	{
+	case 0x03: // Create a port: d2 = (channels << 36) | blocks, d3 = level and attributes (not used)
+	{
+		const u32 nch = static_cast<u32>((d2 >> 36) & 0xf);
+		const u32 nblock = static_cast<u32>(d2 & 0xffff);
+		u32 size = 0;
+		const s32 idx = vsh_legacy_audio().create_port(nch, nblock, size);
+
+		reply_op = 0x04;
+		r2 = idx >= 0 ? static_cast<u64>(idx) : ~u64{0};
+		r3 = idx >= 0 ? size : 0;
+
+		sys_event.warning("AUDIO-HLE: op 0x03 d2=0x%llx d3=0x%llx -> port %d", d2, d3, idx);
+		return true;
+	}
+	case 0x05: // Shared memory of a port: d2 = port, reply d2 = ipc key, d3 = flags (NOT_CARE | 64 KB granularity, the client creates it)
+	{
+		const u32 idx = static_cast<u32>(d2 & 0xff);
+
+		reply_op = 0x06;
+
+		if (vsh_legacy_audio().port_exists(idx))
+		{
+			r2 = vsh_legacy_audio_t::port_key(idx);
+			r3 = 0x8200;
+		}
+
+		return true;
+	}
+	case 0x09: // Control shared memory, d3 = offset of the read indices
+	{
+		vsh_legacy_audio().reset();
+
+		reply_op = 0x0a;
+		r2 = vsh_legacy_audio_t::ctl_key;
+		r3 = vsh_legacy_audio_t::read_index_offset;
+		return true;
+	}
+	case 0x1a: // Offsets of the four tag arrays (16 entries of 8 bytes) of a port, relative to the tag tables
+	{
+		const u32 base = static_cast<u32>(d2 & 0xff) * 0x200;
+
+		reply_op = 0x1b;
+		r2 = (u64{base + 0x100} << 32) | (base + 0x000);
+		r3 = (u64{base + 0x080} << 32) | (base + 0x180);
+		return true;
+	}
+	case 0x1c: // Offset of the tag tables in the control memory (d3 is the size the server reserves for them)
+	{
+		reply_op = 0x1d;
+		r2 = vsh_legacy_audio_t::tag_table_offset;
+		r3 = 0x1800;
+		return true;
+	}
+	default: return false;
+	}
+}
+
+// One-way requests (no reply): 0x0b removes a port, 0x0e starts (d3 >> 60 == 1) or stops (== 2) it
+static void vsh_legacy_audio_oneway(u32 op, u64 d2, u64 d3)
+{
+	const u32 idx = static_cast<u32>(d2 & 0xff);
+
+	if (op == 0x0e)
+	{
+		const u64 cmd = d3 >> 60;
+
+		if (cmd == 1)
+		{
+			vsh_legacy_audio().start_port(idx);
+		}
+		else if (cmd == 2)
+		{
+			vsh_legacy_audio().stop_port(idx);
+		}
+		else
+		{
+			sys_event.warning("AUDIO-HLE: op 0x0e with unknown command d3=0x%llx", d3);
+		}
+	}
+	else if (op == 0x0b)
+	{
+		vsh_legacy_audio().remove_port(idx);
+	}
+}
+
 // Minimal emulation of the PS3 audio server (sys_audio.self) for 2.17-era VSH.
 // The client side (vshmw, libaudio init at 0x31ce70..0x31d1e8) performs this handshake over IPC queues:
 //   request d1 = opcode in the low 9 bits (session id in the upper bits), d2 = reply queue ipc key
@@ -991,7 +1438,8 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 // Only after all of them succeeded does the client set its "initialized" flag (otherwise it returns
 // CELL_AUDIO_ERROR_NOT_INIT, which paf then stores and uses to skip display setup).
 // legacy_client: the request came in on the IPC key of 0.84/0.85 (0x12340098). Only those clients get the special handling of
-// the ops 0x03/0x05 and the one-way ops. The 2.xx client (key 0x8000cafe0246fab4) gets the generic answers it always got.
+// the ops 0x03/0x05/0x09/0x1a/0x1c and the one-way ops, which go to the HLE mixer above (vsh_legacy_audio_t). The 2.xx client
+// (key 0x8000cafe0246fab4) gets the generic answers it always got.
 static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3, bool legacy_client)
 {
 	static atomic_t<u32> s_log_count = 0;
@@ -1042,6 +1490,7 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3, bool legacy_client)
 			sys_event.warning("AUDIO-SRV: one-way op=0x%x, no reply", op);
 		}
 
+		vsh_legacy_audio_oneway(op, d2, d3);
 		return;
 	}
 
@@ -1052,45 +1501,51 @@ static void vsh_audio_server_request(u64 d1, u64 d2, u64 d3, bool legacy_client)
 	// Ops 0x03 and 0x05 are only special for the 0.84/0.85 client, everything else falls through to the generic answer (switch value not in the table)
 	const u32 switch_op = (!legacy_client && (op == 0x03 || op == 0x05)) ? 0x1fe : op;
 
-	switch (switch_op)
-	{
-	case 0x01: reply_op = 0x02; r2 = session; break;
-	case 0x30: reply_op = 0x30; r2 = 0x5a5a5; break;
-	case 0x07: reply_op = 0x08; r2 = 0x100000; r3 = 0x8400; break;
-	case 0x09: reply_op = 0x0a; r2 = 0x8000cafe02465a00ull; r3 = 8; break;
-	case 0x1c: reply_op = 0x1d; r2 = 0; break;
-	case 0x1a4: reply_op = 0x1a5; r2 = 0x00080008; break; // two packed 16-bit values stored by the client, meaning unknown (guess: 8 and 8)
-	// 0.84 creates its mixer port with op 0x03 (d2 = 0x8000000008, d3 = 1.0f and parameters) followed by op 0x05 (d2 = d2 of the op 0x04 reply).
-	// The client then calls sys_mmapper_allocate_shared_memory(ipc_key = d2 of the op 0x06 reply, size = d3 of the op 0x04 reply,
-	// flags = d3 of the op 0x06 reply) and maps the memory. With empty replies that was (0, 0, 0), which fails with CELL_EALIGN and aborts
-	// VSH's initSurMixer(). Sizes and keys here are guesses: 128 KB (8 channels * 16 blocks * 256 samples * 4 bytes), 64 KB granularity.
-	case 0x03:
-	{
-		reply_op = 0x04;
-		r2 = 1;
-		r3 = 0x20000;
-		s_port_pending[(session >> 9) % std::size(s_port_pending)] = 1;
-		break;
-	}
-	case 0x05:
-	{
-		reply_op = 0x06;
+	// The legacy client gets the replies of the real server for the ops it handles, everything else keeps the generic answer
+	const bool legacy_handled = legacy_client && vsh_legacy_audio_request(op, d2, d3, reply_op, r2, r3);
 
-		if (s_port_pending[(session >> 9) % std::size(s_port_pending)].exchange(0))
+	if (!legacy_handled)
+	{
+		switch (switch_op)
 		{
-			r2 = 0x8000cafe02465b00ull + (u64{s_port_count++} << 8);
-			r3 = 0x8200; // NOT_CARE | 64 KB granularity, so RPCS3 creates the shared memory
+		case 0x01: reply_op = 0x02; r2 = session; break;
+		case 0x30: reply_op = 0x30; r2 = 0x5a5a5; break;
+		case 0x07: reply_op = 0x08; r2 = 0x100000; r3 = 0x8400; break;
+		case 0x09: reply_op = 0x0a; r2 = 0x8000cafe02465a00ull; r3 = 8; break;
+		case 0x1c: reply_op = 0x1d; r2 = 0; break;
+		case 0x1a4: reply_op = 0x1a5; r2 = 0x00080008; break; // two packed 16-bit values stored by the client, meaning unknown (guess: 8 and 8)
+		// 0.84 creates its mixer port with op 0x03 (d2 = 0x8000000008, d3 = 1.0f and parameters) followed by op 0x05 (d2 = d2 of the op 0x04 reply).
+		// The client then calls sys_mmapper_allocate_shared_memory(ipc_key = d2 of the op 0x06 reply, size = d3 of the op 0x04 reply,
+		// flags = d3 of the op 0x06 reply) and maps the memory. With empty replies that was (0, 0, 0), which fails with CELL_EALIGN and aborts
+		// VSH's initSurMixer(). Sizes and keys here are guesses: 128 KB (8 channels * 16 blocks * 256 samples * 4 bytes), 64 KB granularity.
+		case 0x03:
+		{
+			reply_op = 0x04;
+			r2 = 1;
+			r3 = 0x20000;
+			s_port_pending[(session >> 9) % std::size(s_port_pending)] = 1;
+			break;
 		}
+		case 0x05:
+		{
+			reply_op = 0x06;
 
-		break;
-	}
-	default:
-	{
-		// Every client function checked so far expects (request opcode + 1) in the reply, so guess that with an empty payload
-		reply_op = (op + 1) & 0x1ff;
-		sys_event.error("AUDIO-SRV: unknown request op=0x%x (d1=0x%llx d2=0x%llx d3=0x%llx), guessing reply op=0x%x with empty payload", op, d1, d2, d3, reply_op);
-		break;
-	}
+			if (s_port_pending[(session >> 9) % std::size(s_port_pending)].exchange(0))
+			{
+				r2 = 0x8000cafe02465b00ull + (u64{s_port_count++} << 8);
+				r3 = 0x8200; // NOT_CARE | 64 KB granularity, so RPCS3 creates the shared memory
+			}
+
+			break;
+		}
+		default:
+		{
+			// Every client function checked so far expects (request opcode + 1) in the reply, so guess that with an empty payload
+			reply_op = (op + 1) & 0x1ff;
+			sys_event.error("AUDIO-SRV: unknown request op=0x%x (d1=0x%llx d2=0x%llx d3=0x%llx), guessing reply op=0x%x with empty payload", op, d1, d2, d3, reply_op);
+			break;
+		}
+		}
 	}
 
 	shared_ptr<lv2_event_queue> reply_queue;
