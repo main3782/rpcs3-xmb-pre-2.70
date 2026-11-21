@@ -12,11 +12,7 @@ Even then, I REQUEST for all the appreciations to be given to the actual RPCS3 d
 
 # Quirks
 
-**TURN PPU/SPU LLVM PRECOMPILATION OFF WHEN RUNNING 0.90 AND EARLIER!!!!** **TURN ON DEBUG CONSOLE MODE WHEN RUNNING 0.85 AND EARLIER!!!**
-
-2.17 and below:
-- No audio
-- No PS button (?)
+Please just check the latest release - i will mention what you have to do and everything there. Or what doesn't work yet. Or whatever.
 
 Original RPCS3 readme:
 =====
