@@ -58,6 +58,7 @@
 #include <span>
 #include <optional>
 #include <charconv>
+#include <tuple>
 
 #include "util/asm.hpp"
 #include "util/vm.hpp"
@@ -2485,6 +2486,109 @@ void ppu_thread::dump_all(std::string& ret) const
 
 extern thread_local std::string(*g_tls_log_prefix)();
 
+// Waits until the progress dialog server has released the progress counters (it does that once the file and module counters balance
+// and its text is empty). Returns false if the emulation was stopped meanwhile.
+// If a counter never balances the PPU thread would wait here silently forever and the guest would never start (seen as a progress
+// dialog frozen at "Module 83 of 84" after a cold PPU LLVM compile of 0.85). So the counters are watched: they are logged, and when
+// they do not move for 'stall_us' they are balanced by hand, and as a last resort released.
+static bool ppu_wait_for_progress_dialog(u64 stall_us = 10'000'000)
+{
+	u32 v = g_progr_ptotal;
+
+	if (!v)
+	{
+		return !Emu.IsStopped();
+	}
+
+	const auto state = []()
+	{
+		return std::make_tuple(+g_progr_ptotal, +g_progr_pdone, +g_progr_ftotal, +g_progr_fdone);
+	};
+
+	ppu_log.warning("PPU: Waiting for the progress dialog to finish: module %u of %u, file %u of %u", +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal);
+
+	auto last_state = state();
+	u64 last_change = get_system_time();
+	u64 last_report = last_change;
+	u32 forced = 0;
+
+	while ((v = g_progr_ptotal))
+	{
+		if (Emu.IsStopped())
+		{
+			return false;
+		}
+
+		g_progr_ptotal.wait(v, atomic_wait_timeout(250'000'000));
+
+		if (!g_progr_ptotal)
+		{
+			break;
+		}
+
+		const u64 now = get_system_time();
+
+		if (const auto cur = state(); cur != last_state)
+		{
+			last_state = cur;
+			last_change = now;
+		}
+
+		if (now - last_report >= 5'000'000)
+		{
+			last_report = now;
+			ppu_log.warning("PPU: Still waiting for the progress dialog: module %u of %u, file %u of %u", +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal);
+		}
+
+		if (now - last_change >= stall_us)
+		{
+			last_change = now;
+			forced++;
+
+			const u32 ptotal = g_progr_ptotal;
+			const u32 pdone = g_progr_pdone;
+			const u32 ftotal = g_progr_ftotal;
+			const u32 fdone = g_progr_fdone;
+			const std::string text = g_progr_text;
+
+			if (forced == 1)
+			{
+				// Make the dialog server see a complete state, it releases and cleans up the counters itself then
+				ppu_log.error("PPU: The progress counters have not moved (module %u of %u, file %u of %u, text '%s'), balancing them", pdone, ptotal, fdone, ftotal, text);
+
+				if (pdone < ptotal)
+				{
+					g_progr_pdone += ptotal - pdone;
+				}
+				else if (pdone > ptotal)
+				{
+					g_progr_ptotal += pdone - ptotal;
+				}
+
+				if (fdone < ftotal)
+				{
+					g_progr_fdone += ftotal - fdone;
+				}
+				else if (fdone > ftotal)
+				{
+					g_progr_ftotal += fdone - ftotal;
+				}
+			}
+			else
+			{
+				// The dialog server did not react either: release the wait
+				ppu_log.error("PPU: The progress dialog did not finish (module %u of %u, file %u of %u, text '%s'), continuing without it", pdone, ptotal, fdone, ftotal, text);
+
+				g_progr_ptotal.release(0);
+				g_progr_ptotal.notify_all();
+				break;
+			}
+		}
+	}
+
+	return !Emu.IsStopped();
+}
+
 void ppu_thread::cpu_task()
 {
 	std::fesetround(FE_TONEAREST);
@@ -2609,11 +2713,24 @@ void ppu_thread::cpu_task()
 		{
 			cmd_pop();
 
+			// Markers for the log: where the start of the guest stops if it does (VSH only)
+			const bool vsh_diag = Emu.IsVsh();
+
+			if (vsh_diag)
+			{
+				ppu_log.warning("VSH diag: PPU initialization: compiling and loading the PPU modules");
+			}
+
 			ppu_initialize();
 
 			if (Emu.IsStopped())
 			{
 				return;
+			}
+
+			if (vsh_diag)
+			{
+				ppu_log.warning("VSH diag: PPU initialization: PPU modules ready, building the SPU cache");
 			}
 
 			spu_cache::initialize();
@@ -2626,14 +2743,14 @@ void ppu_thread::cpu_task()
 
 			// Wait until the progress dialog is closed.
 			// We don't want to open a cell dialog while a native progress dialog is still open.
-			while (u32 v = g_progr_ptotal)
+			if (vsh_diag)
 			{
-				if (Emu.IsStopped())
-				{
-					return;
-				}
+				ppu_log.warning("VSH diag: PPU initialization: SPU cache ready, waiting for the progress dialog (module %u of %u, file %u of %u)", +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal);
+			}
 
-				g_progr_ptotal.wait(v);
+			if (!ppu_wait_for_progress_dialog())
+			{
+				return;
 			}
 
 			g_fxo->get<progress_dialog_workaround>().show_overlay_message_only = true;
@@ -2658,12 +2775,22 @@ void ppu_thread::cpu_task()
 			});
 
 			// Check if this is the only PPU left to initialize (savestates related)
+			if (vsh_diag)
+			{
+				ppu_log.warning("VSH diag: PPU initialization: progress dialog done, scheduler ready=%u starting=%u", static_cast<u32>(lv2_obj::is_scheduler_ready()), static_cast<u32>(Emu.IsStarting()));
+			}
+
 			if (lv2_obj::is_scheduler_ready())
 			{
 				if (Emu.IsStarting())
 				{
 					Emu.FinalizeRunRequest();
 				}
+			}
+
+			if (vsh_diag)
+			{
+				ppu_log.warning("VSH diag: PPU initialization: finished");
 			}
 
 			break;
