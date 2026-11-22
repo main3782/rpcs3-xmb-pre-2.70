@@ -2491,7 +2491,7 @@ extern thread_local std::string(*g_tls_log_prefix)();
 // If a counter never balances the PPU thread would wait here silently forever and the guest would never start (seen as a progress
 // dialog frozen at "Module 83 of 84" after a cold PPU LLVM compile of 0.85). So the counters are watched: they are logged, and when
 // they do not move for 'stall_us' they are balanced by hand, and as a last resort released.
-static bool ppu_wait_for_progress_dialog(u64 stall_us = 10'000'000)
+static bool ppu_wait_for_progress_dialog(u64 stall_us = 3'000'000)
 {
 	u32 v = g_progr_ptotal;
 
@@ -4522,6 +4522,9 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 		}
 	}
 
+	// Only for the log: where the file progress counter falls behind (VSH only)
+	const bool vsh_diag = Emu.IsVsh();
+
 	named_thread_group workers("SPRX Worker ", std::min<u32>(software_thread_limit, cpu_thread_limit), [&]
 	{
 		jit_write_guard jit_guard;
@@ -4744,6 +4747,11 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 	// Join every thread
 	workers.join();
 
+	if (vsh_diag)
+	{
+		ppu_log.warning("VSH diag: precompile: SPRX workers finished: file %u of %u", +g_progr_fdone, +g_progr_ftotal);
+	}
+
 	named_thread exec_worker("PPU Exec Worker", [&]
 	{
 		if (!possible_exec_file_paths)
@@ -4768,6 +4776,11 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 			const auto& [path, _, file_size] = *slice;
 
 			ppu_log.notice("Trying to load as executable: %s", path);
+
+			if (vsh_diag)
+			{
+				ppu_log.warning("VSH diag: precompile: exec worker starts file %u of %u: %s", +g_progr_fdone, +g_progr_ftotal, path);
+			}
 
 			// Load SELF
 			fs::file src{path};
@@ -4872,6 +4885,11 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 	});
 
 	exec_worker();
+
+	if (vsh_diag)
+	{
+		ppu_log.warning("VSH diag: precompile: exec worker finished: file %u of %u", +g_progr_fdone, +g_progr_ftotal);
+	}
 }
 
 extern void ppu_initialize()
