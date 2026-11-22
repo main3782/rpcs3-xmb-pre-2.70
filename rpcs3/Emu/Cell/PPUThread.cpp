@@ -4522,9 +4522,6 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 		}
 	}
 
-	// Only for the log: where the file progress counter falls behind (VSH only)
-	const bool vsh_diag = Emu.IsVsh();
-
 	named_thread_group workers("SPRX Worker ", std::min<u32>(software_thread_limit, cpu_thread_limit), [&]
 	{
 		jit_write_guard jit_guard;
@@ -4660,7 +4657,21 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 					continue;
 				}
 
-				if (auto prx = ppu_load_prx(obj, true, path, offset))
+				shared_ptr<lv2_prx> prx;
+
+				try
+				{
+					prx = ppu_load_prx(obj, true, path, offset);
+				}
+				catch (const std::exception& e)
+				{
+					// A module that cannot be loaded must not take this thread down: the thread would never count the file as done,
+					// and the progress dialog (and with it the start of the guest) would wait for it forever.
+					// Seen with libatxenc.sprx of firmware 0.85: its symbol table is stripped, "Range check failed" in the relocations.
+					ppu_log.error("Failed to load '%s' as PRX: %s", path, e.what());
+				}
+
+				if (prx)
 				{
 					obj.clear(), src.close(); // Clear decrypted file and elf object memory
 					ppu_initialize(*prx, false, file_size);
@@ -4747,11 +4758,6 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 	// Join every thread
 	workers.join();
 
-	if (vsh_diag)
-	{
-		ppu_log.warning("VSH diag: precompile: SPRX workers finished: file %u of %u", +g_progr_fdone, +g_progr_ftotal);
-	}
-
 	named_thread exec_worker("PPU Exec Worker", [&]
 	{
 		if (!possible_exec_file_paths)
@@ -4776,11 +4782,6 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 			const auto& [path, _, file_size] = *slice;
 
 			ppu_log.notice("Trying to load as executable: %s", path);
-
-			if (vsh_diag)
-			{
-				ppu_log.warning("VSH diag: precompile: exec worker starts file %u of %u: %s", +g_progr_fdone, +g_progr_ftotal, path);
-			}
 
 			// Load SELF
 			fs::file src{path};
@@ -4885,11 +4886,6 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 	});
 
 	exec_worker();
-
-	if (vsh_diag)
-	{
-		ppu_log.warning("VSH diag: precompile: exec worker finished: file %u of %u", +g_progr_fdone, +g_progr_ftotal);
-	}
 }
 
 extern void ppu_initialize()
