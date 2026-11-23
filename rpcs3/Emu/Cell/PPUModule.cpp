@@ -2057,6 +2057,47 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 		return null_ptr;
 	}
 
+	// A compact relocation table that points to segments the module does not have cannot be applied, and the relocation loop below
+	// would raise a range error for it, which ends the thread that loads the module (and with it, the precompile of all other modules).
+	// Refuse such a module here, before anything is allocated. Seen with libatxenc.sprx of firmware 0.85: its symbol table is stripped,
+	// so it is not recognised as a legacy (plain ELF RELA) module, and its relocation segment has no usable compact entries.
+	if (!ppu_prx_has_legacy_relocs(elf))
+	{
+		usz seg_count = 0;
+
+		for (const auto& prog : elf.progs)
+		{
+			if (prog.p_type == 0x1u)
+			{
+				seg_count++;
+			}
+		}
+
+		for (const auto& prog : elf.progs)
+		{
+			if (prog.p_type != 0x700000a4u)
+			{
+				continue;
+			}
+
+			// Layout of an entry: be_t<u64> offset, be_t<u16> unk0, u8 index_value, u8 index_addr, be_t<u32> type, u64 ptr
+			constexpr usz entry_size = 24;
+			const usz size = std::min<usz>(static_cast<usz>(prog.p_filesz), prog.bin.size());
+
+			for (usz i = 0; i + entry_size <= size; i += entry_size)
+			{
+				const u8 index_value = prog.bin[i + 10];
+				const u8 index_addr = prog.bin[i + 11];
+
+				if (index_addr >= seg_count || (index_value != 0xFF && index_value >= seg_count))
+				{
+					ppu_loader.error("Cannot load PRX '%s': relocation %u refers to a segment that does not exist (index_addr=%u, index_value=%u, segments=%u)", path, static_cast<u32>(i / entry_size), static_cast<u32>(index_addr), static_cast<u32>(index_value), static_cast<u32>(seg_count));
+					return null_ptr;
+				}
+			}
+		}
+	}
+
 	// Create new PRX object
 	const auto prx = !ar && !virtual_load ? idm::make_ptr<lv2_obj, lv2_prx>() : make_shared<lv2_prx>();
 

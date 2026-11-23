@@ -4657,21 +4657,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 					continue;
 				}
 
-				shared_ptr<lv2_prx> prx;
-
-				try
-				{
-					prx = ppu_load_prx(obj, true, path, offset);
-				}
-				catch (const std::exception& e)
-				{
-					// A module that cannot be loaded must not take this thread down: the thread would never count the file as done,
-					// and the progress dialog (and with it the start of the guest) would wait for it forever.
-					// Seen with libatxenc.sprx of firmware 0.85: its symbol table is stripped, "Range check failed" in the relocations.
-					ppu_log.error("Failed to load '%s' as PRX: %s", path, e.what());
-				}
-
-				if (prx)
+				if (auto prx = ppu_load_prx(obj, true, path, offset))
 				{
 					obj.clear(), src.close(); // Clear decrypted file and elf object memory
 					ppu_initialize(*prx, false, file_size);
