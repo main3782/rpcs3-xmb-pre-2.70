@@ -8,13 +8,17 @@
 #include "Emu/Cell/Modules/cellPad.h"
 
 #include "sys_process.h"
+#include "sys_event.h"
 
 #include "Emu/System.h"
+#include "Emu/IdManager.h"
 
+#include <algorithm>
 #include <array>
 #include <map>
 #include <mutex>
 #include <tuple>
+#include <vector>
 
 LOG_CHANNEL(sys_hid);
 
@@ -151,11 +155,75 @@ error_code sys_hid_manager_is_process_permission_root(u32 pid)
 	return not_an_error(g_ps3_process_info.has_root_perm());
 }
 
+namespace
+{
+	// Event queues that registered with sys_hid_manager_add_hot_key_observer (by id, the queue may be destroyed again)
+	struct hid_hot_key_observers
+	{
+		std::mutex mutex;
+		std::vector<u32> queues;
+	};
+}
+
 error_code sys_hid_manager_add_hot_key_observer(u32 event_queue, vm::ptr<u32> unk)
 {
-	sys_hid.todo("sys_hid_manager_add_hot_key_observer(event_queue=0x%x, unk=*0x%x)", event_queue, unk);
+	sys_hid.warning("sys_hid_manager_add_hot_key_observer(event_queue=0x%x, unk=*0x%x)", event_queue, unk);
+
+	if (!idm::get_unlocked<lv2_obj, lv2_event_queue>(event_queue))
+	{
+		return CELL_ESRCH;
+	}
+
+	g_fxo->need<hid_hot_key_observers>();
+
+	auto& observers = g_fxo->get<hid_hot_key_observers>();
+
+	std::lock_guard lock(observers.mutex);
+
+	if (std::find(observers.queues.begin(), observers.queues.end(), event_queue) == observers.queues.end())
+	{
+		observers.queues.push_back(event_queue);
+	}
 
 	return CELL_OK;
+}
+
+void sys_hid_notify_ps_button(u32 pad_index, bool pressed)
+{
+	// Only VSH of firmware up to 1.80 registers an observer
+	if (pad_index > 6 || !g_fxo->is_init<hid_hot_key_observers>())
+	{
+		return;
+	}
+
+	auto& observers = g_fxo->get<hid_hot_key_observers>();
+
+	std::vector<u32> queues;
+
+	{
+		std::lock_guard lock(observers.mutex);
+		queues = observers.queues;
+	}
+
+	// Format as expected by the observer of the SDK (sdk.sprx, read from firmware 1.80):
+	// data1 selects the callback of the observer (0 is the one that was registered),
+	// data2 is passed to that callback: (event type 1 << 24) | (pad index << 16) | state (1 = pressed, 0 = released)
+	const u64 data2 = (u64{1} << 24) | (u64{pad_index} << 16) | (pressed ? 1 : 0);
+
+	u32 sent = 0;
+
+	for (const u32 id : queues)
+	{
+		if (const auto queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(id))
+		{
+			if (queue->send(0, 0, data2, 0) == CELL_OK)
+			{
+				sent++;
+			}
+		}
+	}
+
+	sys_hid.warning("PS button of pad %u %s: hot key event sent to %u of %u observer queue(s)", pad_index, pressed ? "pressed" : "released", sent, static_cast<u32>(queues.size()));
 }
 
 static error_code sys_hid_manager_read_impl(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 buf_size)

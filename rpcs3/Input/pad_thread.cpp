@@ -27,6 +27,7 @@
 #include "Emu/RSX/Overlays/HomeMenu/overlay_home_menu.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
 #include "Emu/Cell/lv2/sys_usbd.h"
+#include "Emu/Cell/lv2/sys_hid.h"
 #include "Emu/Cell/Modules/cellGem.h"
 #include "Emu/Cell/timers.hpp"
 #include "Utilities/Thread.h"
@@ -552,6 +553,9 @@ void pad_thread::operator()()
 		input_log.notice("Pad threads started");
 	};
 
+	// PS button state of the first pads as last reported to the hot key observer of VSH (see below)
+	std::array<bool, 7> vsh_ps_button{};
+
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
 		if (!pad::g_enabled || !is_input_allowed())
@@ -653,6 +657,36 @@ void pad_thread::operator()()
 			if (!any_button_pressed)
 			{
 				m_info.ignore_input = false;
+			}
+		}
+
+		// VSH of firmware up to 1.80 does not read the PS button from the pad data, it waits for hot key events instead.
+		// These are only sent if VSH registered an observer, so newer firmware (which reads the pad data) is not affected.
+		if (is_vsh)
+		{
+			for (usz i = 0; i < vsh_ps_button.size(); i++)
+			{
+				const auto& pad = m_pads[i];
+
+				bool pressed = false;
+
+				if (pad && pad->is_connected())
+				{
+					for (const Button& button : pad->m_buttons)
+					{
+						if (button.m_offset == CELL_PAD_BTN_OFFSET_DIGITAL1 && button.m_outKeyCode == CELL_PAD_CTRL_PS && button.m_pressed)
+						{
+							pressed = true;
+							break;
+						}
+					}
+				}
+
+				if (pressed != vsh_ps_button[i])
+				{
+					vsh_ps_button[i] = pressed;
+					sys_hid_notify_ps_button(static_cast<u32>(i), pressed);
+				}
 			}
 		}
 

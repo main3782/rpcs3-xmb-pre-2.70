@@ -42,3 +42,8 @@ error_code sys_hid_manager_is_process_permission_root(u32 pid);
 error_code sys_hid_manager_513(u64 a1, u64 a2, vm::ptr<void> buf, u64 buf_size);
 error_code sys_hid_manager_514(u32 pkg_id, vm::ptr<void> buf, u64 buf_size);
 error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 buf_size);
+
+// Called by the pad thread (VSH only) when the PS button of a pad is pressed or released.
+// Firmware up to 1.80 learns about the button through the hot key observer (sys_hid_manager_add_hot_key_observer), not from the pad data.
+// Does nothing when no observer is registered.
+void sys_hid_notify_ps_button(u32 pad_index, bool pressed);
