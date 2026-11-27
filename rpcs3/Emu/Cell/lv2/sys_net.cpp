@@ -1929,7 +1929,7 @@ static std::string net_vsh_ifr_name(u32 ifr_addr)
 // Returns true if the ioctl was handled
 static bool net_vsh_ioctl(u32 cmd, u32 ifr_addr)
 {
-	constexpr u16 IFF_UP = 0x1, IFF_BROADCAST = 0x2, IFF_LOOPBACK = 0x8, IFF_RUNNING = 0x40, IFF_SIMPLEX = 0x800, IFF_MULTICAST = 0x8000;
+	constexpr u16 VSH_IFF_UP = 0x1, VSH_IFF_BROADCAST = 0x2, VSH_IFF_LOOPBACK = 0x8, VSH_IFF_RUNNING = 0x40, VSH_IFF_SIMPLEX = 0x800, VSH_IFF_MULTICAST = 0x8000;
 
 	if (!net_vsh_virtual_if() || !ifr_addr || !vm::check_addr(ifr_addr, vm::page_readable | vm::page_writable, 0x20))
 	{
@@ -1948,7 +1948,7 @@ static bool net_vsh_ioctl(u32 cmd, u32 ifr_addr)
 
 	if (it == if_flags.end())
 	{
-		it = if_flags.emplace(name, is_lo ? u16{IFF_LOOPBACK | IFF_MULTICAST} : u16{IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST}).first;
+		it = if_flags.emplace(name, is_lo ? u16{VSH_IFF_LOOPBACK | VSH_IFF_MULTICAST} : u16{VSH_IFF_BROADCAST | VSH_IFF_SIMPLEX | VSH_IFF_MULTICAST}).first;
 	}
 
 	switch (cmd)
@@ -1957,9 +1957,9 @@ static bool net_vsh_ioctl(u32 cmd, u32 ifr_addr)
 	{
 		u16 flags = it->second;
 
-		if (flags & IFF_UP)
+		if (flags & VSH_IFF_UP)
 		{
-			flags |= IFF_RUNNING;
+			flags |= VSH_IFF_RUNNING;
 		}
 
 		vm::write16(ifr_addr + 0x10, flags);
@@ -1967,7 +1967,7 @@ static bool net_vsh_ioctl(u32 cmd, u32 ifr_addr)
 	}
 	case 0x80206910: // SIOCSIFFLAGS
 	{
-		it->second = static_cast<u16>(static_cast<u16>(vm::_ref<u16>(ifr_addr + 0x10)) & ~IFF_RUNNING);
+		it->second = static_cast<u16>(static_cast<u16>(vm::_ref<u16>(ifr_addr + 0x10)) & ~VSH_IFF_RUNNING);
 		return true;
 	}
 	case 0xc020698c: // get hardware address: sockaddr_dl-like, family AF_LINK(0x12) at +0x11, MAC at +0x12
