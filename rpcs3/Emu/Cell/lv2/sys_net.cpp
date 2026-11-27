@@ -1962,23 +1962,23 @@ static bool net_vsh_ioctl(u32 cmd, u32 ifr_addr)
 			flags |= IFF_RUNNING;
 		}
 
-		vm::_ref<u16>(ifr_addr + 0x10) = flags;
+		vm::write16(ifr_addr + 0x10, flags);
 		return true;
 	}
 	case 0x80206910: // SIOCSIFFLAGS
 	{
-		it->second = static_cast<u16>(vm::_ref<u16>(ifr_addr + 0x10)) & ~IFF_RUNNING;
+		it->second = static_cast<u16>(static_cast<u16>(vm::_ref<u16>(ifr_addr + 0x10)) & ~IFF_RUNNING);
 		return true;
 	}
 	case 0xc020698c: // get hardware address: sockaddr_dl-like, family AF_LINK(0x12) at +0x11, MAC at +0x12
 	{
 		const auto& mac = g_fxo->get<named_thread<np::np_handler>>().get_ether_addr();
-		vm::_ref<u8>(ifr_addr + 0x10) = 0x10;
-		vm::_ref<u8>(ifr_addr + 0x11) = 0x12;
+		vm::write8(ifr_addr + 0x10, 0x10);
+		vm::write8(ifr_addr + 0x11, 0x12);
 
 		for (u32 i = 0; i < 6; i++)
 		{
-			vm::_ref<u8>(ifr_addr + 0x12 + i) = mac[i];
+			vm::write8(ifr_addr + 0x12 + i, mac[i]);
 		}
 
 		return true;
@@ -2160,7 +2160,7 @@ error_code sys_net_control(ppu_thread& ppu, u32 arg1, s32 arg2, vm::ptr<void> ar
 			sys_net.warning("VSH network: no link reported, set 'Internet enabled' in the network settings of RPCS3");
 		}
 
-		vm::_ref<u32>(arg3.addr()) = link ? 0x20 : 0;
+		vm::write32(arg3.addr(), link ? 0x20u : 0u);
 		return CELL_OK;
 	}
 	return CELL_OK;
