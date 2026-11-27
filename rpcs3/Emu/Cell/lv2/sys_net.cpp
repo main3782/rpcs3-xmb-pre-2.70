@@ -2,6 +2,7 @@
 #include "sys_net.h"
 
 #include "Emu/IdManager.h"
+#include "Emu/System.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Utilities/Thread.h"
 
@@ -33,6 +34,8 @@
 #include "Emu/NP/np_helpers.h"
 #include "Emu/Cell/timers.hpp"
 #include <shared_mutex>
+#include <mutex>
+#include <map>
 
 #include "sys_net/network_context.h"
 #include "sys_net/lv2_socket.h"
@@ -1851,6 +1854,51 @@ error_code sys_net_abort(ppu_thread& ppu, s32 type, u64 arg, s32 flags)
 	return CELL_OK;
 }
 
+// VSH diag (diagnostic only, no behaviour change): dump the guest buffers of the net calls that are still TODO stubs.
+// Logs the first 3 values per tag and then every change (at most 300 lines per tag).
+static void net_vsh_diag_dump(const std::string& tag, u32 addr, u32 size)
+{
+	if (!Emu.IsVsh() || !addr || !size || size > 0x100)
+	{
+		return;
+	}
+
+	std::string out;
+
+	if (!vm::check_addr(addr, vm::page_readable, size))
+	{
+		out = "<unreadable>";
+	}
+	else
+	{
+		for (u32 i = 0; i < size; i++)
+		{
+			fmt::append(out, "%s%02x", (i && i % 4 == 0) ? " " : "", vm::_ref<u8>(addr + i));
+		}
+	}
+
+	struct diag_state
+	{
+		std::string last;
+		u32 logged = 0;
+	};
+
+	static std::mutex diag_mutex;
+	static std::map<std::string, diag_state> diag_map;
+
+	std::lock_guard lock(diag_mutex);
+	diag_state& st = diag_map[tag];
+
+	const bool changed = st.last != out;
+	st.last = out;
+
+	if ((changed || st.logged < 3) && st.logged < 300)
+	{
+		st.logged++;
+		sys_net.warning("VSH diag: %s buf=*0x%x [%s]", tag, addr, out);
+	}
+}
+
 struct net_infoctl_cmd_6_t
 {
 	be_t<s32> sock_id;
@@ -1915,6 +1963,11 @@ error_code sys_net_infoctl(ppu_thread& ppu, s32 cmd, vm::ptr<void> arg)
 		sys_net.notice("sys_net_infoctl(cmd=%d, arg=*0x%x)", cmd, arg);
 	else
 		sys_net.todo("sys_net_infoctl(cmd=%d, arg=*0x%x)", cmd, arg);
+
+	if (cmd != 6 && cmd != 9)
+	{
+		net_vsh_diag_dump(fmt::format("infoctl cmd=%d", cmd), arg.addr(), 0x40);
+	}
 
 	// TODO
 	switch (cmd)
@@ -2007,6 +2060,7 @@ error_code sys_net_control(ppu_thread& ppu, u32 arg1, s32 arg2, vm::ptr<void> ar
 	ppu.state += cpu_flag::wait;
 
 	sys_net.todo("sys_net_control(0x%x, %d, *0x%x, %d)", arg1, arg2, arg3, arg4);
+	net_vsh_diag_dump(fmt::format("control cmd=0x%x len=%d", static_cast<u32>(arg2), arg4), arg3.addr(), arg4 > 0 ? static_cast<u32>(arg4) : 0u);
 	return CELL_OK;
 }
 
@@ -2015,6 +2069,7 @@ error_code sys_net_bnet_ioctl(ppu_thread& ppu, s32 arg1, u32 arg2, u32 arg3)
 	ppu.state += cpu_flag::wait;
 
 	sys_net.todo("sys_net_bnet_ioctl(%d, 0x%x, 0x%x)", arg1, arg2, arg3);
+	net_vsh_diag_dump(fmt::format("ioctl 0x%x", arg2), arg3, (arg2 >> 16) & 0x1fff);
 	return CELL_OK;
 }
 
@@ -2031,5 +2086,6 @@ error_code sys_net_eurus_post_command(ppu_thread& ppu, s32 arg1, u32 arg2, u32 a
 	ppu.state += cpu_flag::wait;
 
 	sys_net.todo("sys_net_eurus_post_command(%d, 0x%x, 0x%x)", arg1, arg2, arg3);
+	net_vsh_diag_dump(fmt::format("eurus_post_command arg1=%d len=0x%x", arg1, arg3), arg2, arg3);
 	return CELL_OK;
 }
