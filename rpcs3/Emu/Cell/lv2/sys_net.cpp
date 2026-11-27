@@ -1901,10 +1901,10 @@ static void net_vsh_diag_dump(const std::string& tag, u32 addr, u32 size)
 }
 
 // VSH virtual ethernet interface: the XMB's netctl code polls the link state and the interface flags of "eth0" through
-// ioctl/sys_net_control. Report a link-up gigabit ethernet interface when "Internet enabled" is set (VSH only).
+// ioctl/sys_net_control. Report a link-up gigabit ethernet interface (VSH only, independent of the "Internet enabled" setting for now).
 static bool net_vsh_virtual_if()
 {
-	return Emu.IsVsh() && g_cfg.net.net_active == np_internet_status::enabled;
+	return Emu.IsVsh();
 }
 
 static std::string net_vsh_ifr_name(u32 ifr_addr)
@@ -2154,11 +2154,6 @@ error_code sys_net_control(ppu_thread& ppu, u32 arg1, s32 arg2, vm::ptr<void> ar
 	{
 		// Link state: bitmask of the negotiated mode (1/2: 10M half/full, 4/8: 100M half/full, 0x10/0x20: 1000M half/full), 0 = no link
 		const bool link = net_vsh_virtual_if();
-
-		if (!link)
-		{
-			sys_net.warning("VSH network: no link reported, set 'Internet enabled' in the network settings of RPCS3");
-		}
 
 		vm::write32(arg3.addr(), link ? 0x20u : 0u);
 		return CELL_OK;
