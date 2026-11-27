@@ -3,6 +3,7 @@
 
 #include "Emu/IdManager.h"
 #include "Emu/System.h"
+#include "Emu/system_config.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Utilities/Thread.h"
 
@@ -1899,6 +1900,93 @@ static void net_vsh_diag_dump(const std::string& tag, u32 addr, u32 size)
 	}
 }
 
+// VSH virtual ethernet interface: the XMB's netctl code polls the link state and the interface flags of "eth0" through
+// ioctl/sys_net_control. Report a link-up gigabit ethernet interface when "Internet enabled" is set (VSH only).
+static bool net_vsh_virtual_if()
+{
+	return Emu.IsVsh() && g_cfg.net.net_active == np_internet_status::enabled;
+}
+
+static std::string net_vsh_ifr_name(u32 ifr_addr)
+{
+	std::string name;
+
+	for (u32 i = 0; i < 16; i++)
+	{
+		const char c = static_cast<char>(vm::_ref<u8>(ifr_addr + i));
+
+		if (!c)
+		{
+			break;
+		}
+
+		name += c;
+	}
+
+	return name;
+}
+
+// Returns true if the ioctl was handled
+static bool net_vsh_ioctl(u32 cmd, u32 ifr_addr)
+{
+	constexpr u16 IFF_UP = 0x1, IFF_BROADCAST = 0x2, IFF_LOOPBACK = 0x8, IFF_RUNNING = 0x40, IFF_SIMPLEX = 0x800, IFF_MULTICAST = 0x8000;
+
+	if (!net_vsh_virtual_if() || !ifr_addr || !vm::check_addr(ifr_addr, vm::page_readable | vm::page_writable, 0x20))
+	{
+		return false;
+	}
+
+	static std::mutex if_mutex;
+	static std::map<std::string, u16> if_flags;
+
+	const std::string name = net_vsh_ifr_name(ifr_addr);
+	const bool is_lo = name.starts_with("lo");
+
+	std::lock_guard lock(if_mutex);
+
+	auto it = if_flags.find(name);
+
+	if (it == if_flags.end())
+	{
+		it = if_flags.emplace(name, is_lo ? u16{IFF_LOOPBACK | IFF_MULTICAST} : u16{IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST}).first;
+	}
+
+	switch (cmd)
+	{
+	case 0xc0206911: // SIOCGIFFLAGS
+	{
+		u16 flags = it->second;
+
+		if (flags & IFF_UP)
+		{
+			flags |= IFF_RUNNING;
+		}
+
+		vm::_ref<u16>(ifr_addr + 0x10) = flags;
+		return true;
+	}
+	case 0x80206910: // SIOCSIFFLAGS
+	{
+		it->second = static_cast<u16>(vm::_ref<u16>(ifr_addr + 0x10)) & ~IFF_RUNNING;
+		return true;
+	}
+	case 0xc020698c: // get hardware address: sockaddr_dl-like, family AF_LINK(0x12) at +0x11, MAC at +0x12
+	{
+		const auto& mac = g_fxo->get<named_thread<np::np_handler>>().get_ether_addr();
+		vm::_ref<u8>(ifr_addr + 0x10) = 0x10;
+		vm::_ref<u8>(ifr_addr + 0x11) = 0x12;
+
+		for (u32 i = 0; i < 6; i++)
+		{
+			vm::_ref<u8>(ifr_addr + 0x12 + i) = mac[i];
+		}
+
+		return true;
+	}
+	default: return false;
+	}
+}
+
 struct net_infoctl_cmd_6_t
 {
 	be_t<s32> sock_id;
@@ -2061,6 +2149,20 @@ error_code sys_net_control(ppu_thread& ppu, u32 arg1, s32 arg2, vm::ptr<void> ar
 
 	sys_net.todo("sys_net_control(0x%x, %d, *0x%x, %d)", arg1, arg2, arg3, arg4);
 	net_vsh_diag_dump(fmt::format("control cmd=0x%x len=%d", static_cast<u32>(arg2), arg4), arg3.addr(), arg4 > 0 ? static_cast<u32>(arg4) : 0u);
+
+	if (Emu.IsVsh() && static_cast<u32>(arg2) == 0x80020001 && arg4 == 4 && arg3)
+	{
+		// Link state: bitmask of the negotiated mode (1/2: 10M half/full, 4/8: 100M half/full, 0x10/0x20: 1000M half/full), 0 = no link
+		const bool link = net_vsh_virtual_if();
+
+		if (!link)
+		{
+			sys_net.warning("VSH network: no link reported, set 'Internet enabled' in the network settings of RPCS3");
+		}
+
+		vm::_ref<u32>(arg3.addr()) = link ? 0x20 : 0;
+		return CELL_OK;
+	}
 	return CELL_OK;
 }
 
@@ -2070,6 +2172,11 @@ error_code sys_net_bnet_ioctl(ppu_thread& ppu, s32 arg1, u32 arg2, u32 arg3)
 
 	sys_net.todo("sys_net_bnet_ioctl(%d, 0x%x, 0x%x)", arg1, arg2, arg3);
 	net_vsh_diag_dump(fmt::format("ioctl 0x%x", arg2), arg3, (arg2 >> 16) & 0x1fff);
+
+	if (net_vsh_ioctl(arg2, arg3))
+	{
+		return CELL_OK;
+	}
 	return CELL_OK;
 }
 
